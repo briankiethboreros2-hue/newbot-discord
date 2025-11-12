@@ -4,13 +4,15 @@ import threading
 import discord
 import os
 import time
-from discord.ext import tasks
+import json
 from keep_alive import app  # import the Flask app instead of start_keep_alive
 
 # --- Intents ---
 intents = discord.Intents.default()
 intents.members = True
 intents.presences = True
+intents.messages = True
+intents.message_content = True  # Required to detect messages
 
 client = discord.Client(intents=intents)
 
@@ -25,12 +27,92 @@ ROLE_ID_CLAN_MASTER = 1389835747040694332   # 🌟 Clan Master
 ROLE_ID_IMPEDANCE = 1437570031822176408     # ⭐ Impedance
 ROLE_ID_OG_IMPEDANCE = 1437572916005834793  # 🎉 OG Impedance (optional)
 
+# --- Reminder system ---
+reminders = [
+    {
+        "title": "🟢 Activity Reminder",
+        "description": "Members must keep their status set only to “Online” while active.\nInactive members without notice may lose their role or be suspended."
+    },
+    {
+        "title": "🧩 IGN Format",
+        "description": "All members must use the official clan format: `IM-(Your IGN)`\nExample: IM-Ryze or IM-Reaper."
+    },
+    {
+        "title": "🔊 Voice Channel Reminder",
+        "description": "When online, you must join the **Public Call** channel.\nOpen mic is required — we value real-time communication.\nStay respectful and avoid mic spamming or toxic behavior."
+    }
+]
+
+# --- Persistent state file ---
+STATE_FILE = "reminder_state.json"
+
+# Default state
+state = {
+    "message_counter": 0,
+    "current_reminder": 0
+}
+
+
+# --- Utility functions to load/save state ---
+def load_state():
+    global state
+    try:
+        with open(STATE_FILE, "r") as f:
+            state = json.load(f)
+        print(f"🔁 Loaded state: {state}")
+    except FileNotFoundError:
+        print("ℹ️ No previous state found — starting fresh.")
+    except Exception as e:
+        print(f"⚠️ Failed to load state: {e}")
+
+
+def save_state():
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+        print(f"💾 Saved state: {state}")
+    except Exception as e:
+        print(f"⚠️ Failed to save state: {e}")
+
 
 @client.event
 async def on_ready():
     print(f"✅ Logged in as {client.user}")
-    reminder_loop.start()
-    print("🕒 Reminder loop started — posting every 3 minutes.")
+    load_state()
+    print("🕓 Ready and tracking messages for reminders.")
+
+
+@client.event
+async def on_message(message):
+    """Track messages and post a reminder every 25 messages in the target channel."""
+    global state
+
+    # Ignore bot's own messages
+    if message.author == client.user:
+        return
+
+    # Only track messages in the reminder channel
+    if message.channel.id == REMINDER_CHANNEL_ID:
+        state["message_counter"] += 1
+        print(f"💬 Message count in reminder channel: {state['message_counter']}")
+        save_state()
+
+        # When the count reaches 25, send a reminder and reset counter
+        if state["message_counter"] >= 70:
+            state["message_counter"] = 0  # Reset counter
+            reminder = reminders[state["current_reminder"]]
+
+            embed = discord.Embed(
+                title="Reminders Impedance!",
+                description=f"**{reminder['title']}**\n\n{reminder['description']}",
+                color=discord.Color.orange()
+            )
+            await message.channel.send(embed=embed)
+            print(f"📢 Sent reminder after 25 messages: {reminder['title']}")
+
+            # Move to next reminder in cycle
+            state["current_reminder"] = (state["current_reminder"] + 1) % len(reminders)
+            save_state()
 
 
 @client.event
@@ -68,7 +150,6 @@ async def on_presence_update(before, after):
         else:
             return
 
-        # Send announcement
         channel = client.get_channel(MAIN_CHANNEL_ID)
         if not channel or not isinstance(channel, discord.TextChannel):
             print("⚠️ Main channel not found or not a text channel.")
@@ -78,46 +159,6 @@ async def on_presence_update(before, after):
         embed.set_thumbnail(url=after.display_avatar.url)
         await channel.send(embed=embed)
         print(f"📢 Sent special role announcement: {title}")
-
-
-# --- Reminder messages ---
-reminders = [
-    {
-        "title": "🟢 Activity Reminder",
-        "description": "Members must keep their status set only to “Online” while active.\nInactive members without notice may lose their role or be suspended."
-    },
-    {
-        "title": "🧩 IGN Format",
-        "description": "All members must use the official clan format: `IM-(Your IGN)`\nExample: IM-Ryze or IM-Reaper."
-    },
-    {
-        "title": "🔊 Voice Channel Reminder",
-        "description": "When online, you must join the **Public Call** channel.\nOpen mic is required — we value real-time communication.\nStay respectful and avoid mic spamming or toxic behavior."
-    }
-]
-
-current_reminder = 0
-
-
-@tasks.loop(minutes=3)
-async def reminder_loop():
-    """Sends one reminder every 3 minutes, rotating through the list."""
-    global current_reminder
-    channel = client.get_channel(REMINDER_CHANNEL_ID)
-    if not channel:
-        print("⚠️ Reminder channel not found.")
-        return
-
-    reminder = reminders[current_reminder]
-    embed = discord.Embed(
-        title="Reminders Impedance!",
-        description=f"**{reminder['title']}**\n\n{reminder['description']}",
-        color=discord.Color.orange()
-    )
-    await channel.send(embed=embed)
-    print(f"📢 Sent reminder: {reminder['title']}")
-
-    current_reminder = (current_reminder + 1) % len(reminders)
 
 
 # --- Run bot in a background thread so Flask can stay in foreground ---
