@@ -17,6 +17,13 @@ client = discord.Client(intents=intents)
 MAIN_CHANNEL_ID = 1437768842871832597       # Main announcements
 RECRUIT_CHANNEL_ID = 1437568595977834590    # Recruit candidates
 
+# --- Role IDs (real values from your server) ---
+ROLE_ID_QUEEN = 1437578521374363769         # 👑 Queen
+ROLE_ID_CLAN_MASTER = 1389835747040694332   # 🌟 Clan Master
+ROLE_ID_IMPEDANCE = 1437570031822176408     # ⭐ Impedance
+# If you have an OG-Impedance role, add its ID here too:
+ROLE_ID_OG_IMPEDANCE = 1437572916005834793  # replace with ID if you create one
+
 
 @client.event
 async def on_ready():
@@ -43,22 +50,21 @@ async def on_presence_update(before, after):
     """Announce when members with specific roles come online."""
     if before.status != after.status and str(after.status) in ["online", "idle", "dnd"]:
         member = after
-        roles_lower = [r.name.lower() for r in member.roles]
+        role_ids = [r.id for r in member.roles]
 
-        # Debug: print what roles the bot detects
-        print(f"🧩 Detected roles for {member.name}: {roles_lower}")
+        print(f"🧩 Detected role IDs for {member.name}: {role_ids}")
 
-        # Check for special role categories
-        if any("queen" in name for name in roles_lower):
+        # Match by role IDs
+        if ROLE_ID_QUEEN in role_ids:
             title, color = f"👑 Queen {member.name} just came online!", discord.Color.gold()
-        elif any("clan" in name and "master" in name for name in roles_lower):
+        elif ROLE_ID_CLAN_MASTER in role_ids:
             title, color = f"🌟 Clan Master {member.name} just came online!", discord.Color.blue()
-        elif any("og" in name and "impedance" in name for name in roles_lower):
-            title, color = f"🎉 OG 🎉 {member.name} just came online!", discord.Color.red()
-        elif any("impedance" in name for name in roles_lower):
+        elif ROLE_ID_IMPEDANCE in role_ids:
             title, color = f"⭐ Impedance {member.name} just came online!", discord.Color.purple()
+        elif ROLE_ID_OG_IMPEDANCE and ROLE_ID_OG_IMPEDANCE in role_ids:
+            title, color = f"🎉 OG 🎉 {member.name} just came online!", discord.Color.red()
         else:
-            return  # Do nothing for other users — they’re handled by on_member_join
+            return  # Ignore others here — handled in on_member_join
 
         # Send announcement
         channel = client.get_channel(MAIN_CHANNEL_ID)
