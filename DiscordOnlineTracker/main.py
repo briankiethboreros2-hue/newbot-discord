@@ -4,6 +4,7 @@ import threading
 import discord
 import os
 import time
+from discord.ext import tasks
 from keep_alive import app  # import the Flask app instead of start_keep_alive
 
 # Enable intents
@@ -16,18 +17,59 @@ client = discord.Client(intents=intents)
 # Channel IDs
 MAIN_CHANNEL_ID = 1437768842871832597       # Main announcements
 RECRUIT_CHANNEL_ID = 1437568595977834590    # Recruit candidates
+REMINDER_CHANNEL_ID = 1369091668724154419   # Reminder channel
 
-# --- Role IDs (real values from your server) ---
-ROLE_ID_QUEEN = 1437578521374363769         # 👑 Queen
-ROLE_ID_CLAN_MASTER = 1389835747040694332   # 🌟 Clan Master
-ROLE_ID_IMPEDANCE = 1437570031822176408     # ⭐ Impedance
-# If you have an OG-Impedance role, add its ID here too:
-ROLE_ID_OG_IMPEDANCE = 1437572916005834793  # replace with ID if you create one
+# --- Role IDs ---
+ROLE_ID_QUEEN = 1437578521374363769
+ROLE_ID_CLAN_MASTER = 1389835747040694332
+ROLE_ID_IMPEDANCE = 1437570031822176408
+ROLE_ID_OG_IMPEDANCE = 1437572916005834793  # optional
+
+# --- Reminder Messages ---
+reminders = [
+    "Reminders Impedance!\n\n🟢 **Activity:** Members must keep their status set only to “Online” while active. Inactive members without notice may lose their role or be suspended.",
+    "Reminders Impedance!\n\n🧩 **IGN Format:** All members must use the official clan format: `IM-(Your IGN)` Example: IM-Ryze or IM-Reaper.",
+    "Reminders Impedance!\n\n🔊 **Voice Channel:** When online, you must join the “Public Call” channel. Open mic is required — we value real-time communication. Stay respectful and avoid mic spamming or toxic behavior."
+]
+
+current_reminder = 0  # index tracker
 
 
 @client.event
 async def on_ready():
     print(f"✅ Logged in as {client.user}")
+    await send_initial_reminder()  # send one immediately when the bot starts
+    reminder_loop.start()  # then continue every 30 minutes
+
+
+async def send_initial_reminder():
+    """Sends the first reminder immediately on startup."""
+    global current_reminder
+    channel = client.get_channel(REMINDER_CHANNEL_ID)
+    if not channel:
+        print("⚠️ Reminder channel not found.")
+        return
+
+    message = reminders[current_reminder]
+    await channel.send(message)
+    print(f"📢 Sent immediate reminder: {message[:40]}...")
+    current_reminder = (current_reminder + 1) % len(reminders)
+
+
+@tasks.loop(minutes=30)
+async def reminder_loop():
+    """Sends rotating reminders every 30 minutes."""
+    global current_reminder
+    channel = client.get_channel(REMINDER_CHANNEL_ID)
+    if not channel:
+        print("⚠️ Reminder channel not found.")
+        return
+
+    message = reminders[current_reminder]
+    await channel.send(message)
+    print(f"📢 Sent reminder: {message[:40]}...")
+
+    current_reminder = (current_reminder + 1) % len(reminders)
 
 
 @client.event
@@ -51,10 +93,8 @@ async def on_presence_update(before, after):
     if before.status != after.status and str(after.status) in ["online", "idle", "dnd"]:
         member = after
         role_ids = [r.id for r in member.roles]
-
         print(f"🧩 Detected role IDs for {member.name}: {role_ids}")
 
-        # Match by role IDs
         if ROLE_ID_QUEEN in role_ids:
             title, color = f"👑 Queen {member.name} just came online!", discord.Color.gold()
         elif ROLE_ID_CLAN_MASTER in role_ids:
@@ -64,9 +104,8 @@ async def on_presence_update(before, after):
         elif ROLE_ID_OG_IMPEDANCE and ROLE_ID_OG_IMPEDANCE in role_ids:
             title, color = f"🎉 OG 🎉 {member.name} just came online!", discord.Color.red()
         else:
-            return  # Ignore others here — handled in on_member_join
+            return
 
-        # Send announcement
         channel = client.get_channel(MAIN_CHANNEL_ID)
         if not channel or not isinstance(channel, discord.TextChannel):
             print("⚠️ Main channel not found or not a text channel.")
@@ -85,7 +124,7 @@ def run_bot():
         print("❌ ERROR: DISCORD_TOKEN not found in environment variables!")
         return
     print("🤖 Starting Discord bot…")
-    time.sleep(5)  # Give Flask a moment to start before connecting
+    time.sleep(5)
     client.run(token)
 
 
