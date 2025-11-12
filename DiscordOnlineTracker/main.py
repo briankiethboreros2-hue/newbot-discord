@@ -45,37 +45,31 @@ async def on_presence_update(before, after):
         member = after
         roles_lower = [r.name.lower() for r in member.roles]
 
-        # Known special roles
-        is_special = any(name in roles_lower for name in [
-            "queen", "queen👑",
-            "cᥣᥲᥒ mᥲstᥱr🌟",
-            "og-impedance🔫",
-            "impedance⭐"
-        ])
+        # Debug: print what roles the bot detects
+        print(f"🧩 Detected roles for {member.name}: {roles_lower}")
 
-        if is_special:
-            # Announce in the main channel
-            channel = client.get_channel(MAIN_CHANNEL_ID)
-            if not channel or not isinstance(channel, discord.TextChannel):
-                print("⚠️ Main channel not found or not a text channel.")
-                return
+        # Check for special role categories
+        if any("queen" in name for name in roles_lower):
+            title, color = f"👑 Queen {member.name} just came online!", discord.Color.gold()
+        elif any("clan" in name and "master" in name for name in roles_lower):
+            title, color = f"🌟 Clan Master {member.name} just came online!", discord.Color.blue()
+        elif any("og" in name and "impedance" in name for name in roles_lower):
+            title, color = f"🎉 OG 🎉 {member.name} just came online!", discord.Color.red()
+        elif any("impedance" in name for name in roles_lower):
+            title, color = f"⭐ Impedance {member.name} just came online!", discord.Color.purple()
+        else:
+            return  # Do nothing for other users — they’re handled by on_member_join
 
-            # Determine title and color based on role
-            if "queen" in roles_lower or "queen👑" in roles_lower:
-                title, color = f"👑 Queen {member.name} just came online!", discord.Color.gold()
-            elif "cᥣᥲᥒ mᥲstᥱr🌟" in roles_lower:
-                title, color = f"🌟 Clan Master {member.name} just came online!", discord.Color.blue()
-            elif "og-impedance🔫" in roles_lower:
-                title, color = f"🎉 OG 🎉 {member.name} just came online!", discord.Color.red()
-            elif "impedance⭐" in roles_lower:
-                title, color = f"⭐ Impedance {member.name} just came online!", discord.Color.purple()
-            else:
-                title, color = f"🎉 {member.name} just came online!", discord.Color.green()
+        # Send announcement
+        channel = client.get_channel(MAIN_CHANNEL_ID)
+        if not channel or not isinstance(channel, discord.TextChannel):
+            print("⚠️ Main channel not found or not a text channel.")
+            return
 
-            embed = discord.Embed(title=title, color=color)
-            embed.set_thumbnail(url=after.display_avatar.url)
-            await channel.send(embed=embed)
-            print(f"📢 Sent special role announcement: {title}")
+        embed = discord.Embed(title=title, color=color)
+        embed.set_thumbnail(url=after.display_avatar.url)
+        await channel.send(embed=embed)
+        print(f"📢 Sent special role announcement: {title}")
 
 
 # --- Run bot in a background thread so Flask can stay in foreground ---
