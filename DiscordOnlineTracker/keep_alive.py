@@ -1,3 +1,4 @@
+
 from flask import Flask
 import threading
 import requests
@@ -9,6 +10,7 @@ app = Flask(__name__)
 def home():
     return "I'm alive!"
 
+
 def ping_self():
     """Continuously ping the Render URL to keep the service alive."""
     url = "https://newbot-discord.onrender.com"  # your actual Render URL
@@ -16,16 +18,20 @@ def ping_self():
 
     while True:
         try:
-            res = requests.get(url)
+            # Added timeout so the thread never hangs if Render is slow
+            res = requests.get(url, timeout=10)
             print(f"✅ Self-ping successful ({res.status_code}) to {url}")
         except Exception as e:
-            print("⚠️ Ping failed:", e)
+            print(f"⚠️ Ping failed: {e}")
         time.sleep(240)  # wait 4 minutes between pings
+
 
 def start_keep_alive():
     """Start Flask and the self-pinger."""
     threading.Thread(target=ping_self, daemon=True).start()
-    app.run(host='0.0.0.0', port=8080)
+    # Turn off debug mode — important for production stability
+    app.run(host='0.0.0.0', port=8080, debug=False)
+
 
 if __name__ == "__main__":
     start_keep_alive()
