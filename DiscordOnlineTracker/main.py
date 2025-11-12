@@ -17,13 +17,30 @@ client = discord.Client(intents=intents)
 MAIN_CHANNEL_ID = 1437768842871832597       # Main announcements
 RECRUIT_CHANNEL_ID = 1437568595977834590    # Recruit candidates
 
+
 @client.event
 async def on_ready():
     print(f"✅ Logged in as {client.user}")
 
+
+@client.event
+async def on_member_join(member):
+    """Announce when a new member joins the server."""
+    recruit_channel = client.get_channel(RECRUIT_CHANNEL_ID)
+    if not recruit_channel or not isinstance(recruit_channel, discord.TextChannel):
+        print("⚠️ Recruit channel not found or not a text channel.")
+        return
+
+    title = f"🪖 Recruit candidate joined — candidate {member.name}"
+    embed = discord.Embed(title=title, color=discord.Color.teal())
+    embed.set_thumbnail(url=member.display_avatar.url)
+    await recruit_channel.send(embed=embed)
+    print(f"📢 Announced new recruit candidate: {member.name}")
+
+
 @client.event
 async def on_presence_update(before, after):
-    # Trigger only when member's status changes
+    """Announce when members with specific roles come online."""
     if before.status != after.status and str(after.status) in ["online", "idle", "dnd"]:
         member = after
         roles_lower = [r.name.lower() for r in member.roles]
@@ -60,18 +77,6 @@ async def on_presence_update(before, after):
             await channel.send(embed=embed)
             print(f"📢 Sent special role announcement: {title}")
 
-        else:
-            # Announce in recruit channel for users without those roles
-            recruit_channel = client.get_channel(RECRUIT_CHANNEL_ID)
-            if not recruit_channel or not isinstance(recruit_channel, discord.TextChannel):
-                print("⚠️ Recruit channel not found or not a text channel.")
-                return
-
-            title = f"🪖 Recruit candidate {member.name} just came online!"
-            embed = discord.Embed(title=title, color=discord.Color.teal())
-            embed.set_thumbnail(url=after.display_avatar.url)
-            await recruit_channel.send(embed=embed)
-            print(f"📢 Sent recruit candidate announcement: {title}")
 
 # --- Run bot in a background thread so Flask can stay in foreground ---
 def run_bot():
@@ -82,6 +87,7 @@ def run_bot():
     print("🤖 Starting Discord bot…")
     time.sleep(5)  # Give Flask a moment to start before connecting
     client.run(token)
+
 
 threading.Thread(target=run_bot, daemon=True).start()
 
