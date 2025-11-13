@@ -1,5 +1,5 @@
 # Render Start Command: python3 "bot code/DiscordOnlineTracker/main.py"
-# Final integrated bot file with recruit DM interview, admin review, reminders, presence announcements.
+# Final fixed bot file with recruit DM interview, admin review, reminders, presence announcements.
 
 import threading
 import discord
@@ -119,7 +119,7 @@ def readable_now():
 
 # Check reactor has one of special roles
 def is_authorized_reactor(member: discord.Member):
-    if not member:
+    if member is None:
         return False
     role_ids = [r.id for r in member.roles]
     for key in ("queen", "clan_master", "og_impedance"):
@@ -129,7 +129,7 @@ def is_authorized_reactor(member: discord.Member):
     return False
 
 def approver_label(member: discord.Member):
-    if not member:
+    if member is None:
         return "Unknown"
     role_ids = [r.id for r in member.roles]
     if ROLES.get("og_impedance") and ROLES["og_impedance"] in role_ids:
@@ -153,12 +153,7 @@ async def on_ready():
 @client.event
 async def on_member_join(member):
     """Start DM interview and post public notice in recruit channel (deleted on success)."""
-    rc = client.get_channel(CHANNELS := {"recruit": CHANNELS} and CHANNELS)  # dummy to keep linter quiet
-
-    recruit_ch = client.get_channel(CHANNELS["recruit"]) if isinstance(CHANNELS, dict) else None
-    # (Above line avoids linter, actual use below:)
-    recruit_ch = client.get_channel(CHANNELS["recruit"])  # recruit channel object
-
+    recruit_ch = client.get_channel(CHANNELS["recruit"])
     if recruit_ch is None:
         print("⚠️ Recruit channel not found.")
         return
@@ -207,6 +202,7 @@ async def on_member_join(member):
                     pass
                 print(f"ℹ️ Member {member.display_name} timed out during interview (q {q_idx+1}).")
                 return  # stop DM flow; inactivity checker will escalate
+
             # record answer
             pending_recruits[uid]["answers"].append(reply.content.strip())
             pending_recruits[uid]["step"] = q_idx + 1
@@ -256,13 +252,19 @@ async def on_member_join(member):
         # mark resolved and remove pending
         pending_recruits[uid]["resolved"] = True
         save_pending()
-        del pending_recruits[uid]
-        save_pending()
+        # remove from dict (keep history in file if you prefer)
+        if uid in pending_recruits:
+            del pending_recruits[uid]
+            save_pending()
         print(f"✅ Completed interview for {member.display_name}")
 
     except Exception as e:
         # DM failed (blocked) or other error: escalate immediately to admin review
         print(f"⚠️ Could not DM {member.display_name}: {e}")
+        # mark last_active and keep pending entry
+        pending_recruits[uid]["last_active"] = now_ts()
+        save_pending()
+
         admin_ch = client.get_channel(CHANNELS["staff_review"])
         display_name = member.display_name
         if admin_ch:
@@ -276,8 +278,11 @@ async def on_member_join(member):
             )
             try:
                 review_msg = await admin_ch.send(embed=embed)
-                await review_msg.add_reaction("👍")
-                await review_msg.add_reaction("👎")
+                try:
+                    await review_msg.add_reaction("👍")
+                    await review_msg.add_reaction("👎")
+                except Exception:
+                    pass
                 # mark this pending as under review immediately
                 pending_recruits[uid]["under_review"] = True
                 pending_recruits[uid]["review_message_id"] = review_msg.id
@@ -392,7 +397,12 @@ async def on_raw_reaction_add(payload):
             save_pending()
 
             # Attempt to fetch recruit member from guild
-            recruit_member = guild.get_member(int(uid))
+            recruit_member = None
+            try:
+                recruit_member = guild.get_member(int(uid))
+            except Exception:
+                recruit_member = None
+
             approver_text = approver_label(reactor)
             staff_ch = client.get_channel(CHANNELS["staff_review"])
 
