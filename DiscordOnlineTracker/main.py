@@ -37,6 +37,7 @@ RECRUIT_QUESTIONS = [
     "2️⃣ Did a member of the clan invite you? If yes, who?",
     "3️⃣ Is the account you're using to apply in our clan your main account?",
     "4️⃣ Are you willing to change your in-game name to our clan format? (e.g., IM-Ryze)"
+    "5️⃣ We require atleast Major⚛ and up, what is your rank?
 ]
 
 REMINDERS = [
