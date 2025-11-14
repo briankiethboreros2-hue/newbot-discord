@@ -1,6 +1,6 @@
 # Render Start Command: python3 "bot code/DiscordOnlineTracker/main.py"
-# Fixed full main.py — inactivity checker, proper member fetch, poll resolution, and cleanup.
-# Keep your existing keep_alive.py in the same repo.
+# Reaction-based approval (Option B) — bot does NOT react to its own review message.
+# Keep keep_alive.py in the repo (ping_self).
 
 import threading
 import discord
@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from keep_alive import app  # keep_alive.ping_self should exist
 
 # -------------------------
-# === CONFIG (leave as-is) ===
+# CONFIG
 # -------------------------
 CHANNELS = {
     "main": 1437768842871832597,         # Main announcements
@@ -28,7 +28,7 @@ ROLES = {
     "og_impedance": 1437572916005834793
 }
 
-REMINDER_THRESHOLD = 50  # messages
+REMINDER_THRESHOLD = 50
 STATE_FILE = "reminder_state.json"
 PENDING_FILE = "pending_recruits.json"
 
@@ -40,25 +40,13 @@ RECRUIT_QUESTIONS = [
 ]
 
 REMINDERS = [
-    {
-        "title": "🟢 Activity Reminder",
-        "description": "Members must keep their status set only to “Online” while active.\nInactive members without notice may lose their role or be suspended."
-    },
-    {
-        "title": "🧩 IGN Format",
-        "description": "All members must use the official clan format: `IM-(Your IGN)`\nExample: IM-Ryze or IM-Reaper."
-    },
-    {
-        "title": "🔊 Voice Channel Reminder",
-        "description": "When online, you must join the **Public Call** channel.\nOpen mic is required — we value real-time communication.\nStay respectful and avoid mic spamming or toxic behavior."
-    }
+    {"title": "🟢 Activity Reminder", "description": "Members must keep their status set only to “Online” while active.\nInactive members without notice may lose their role or be suspended."},
+    {"title": "🧩 IGN Format", "description": "All members must use the official clan format: `IM-(Your IGN)`\nExample: IM-Ryze or IM-Reaper."},
+    {"title": "🔊 Voice Channel Reminder", "description": "When online, you must join the **Public Call** channel.\nOpen mic is required — we value real-time communication.\nStay respectful and avoid mic spamming or toxic behavior."}
 ]
 
-# Poll settings (1 hour max, will resolve early on first valid admin vote)
-POLL_DURATION_SECONDS = 60 * 60  # 1 hour
-
 # -------------------------
-# === SETUP ===
+# SETUP
 # -------------------------
 intents = discord.Intents.default()
 intents.members = True
@@ -68,12 +56,11 @@ intents.message_content = True
 
 client = discord.Client(intents=intents)
 
-# persistent state
 state = {"message_counter": 0, "current_reminder": 0}
-pending_recruits = {}  # dict keyed by str(uid)
+pending_recruits = {}  # str(uid) -> dict
 
 # -------------------------
-# === UTILITIES ===
+# UTILITIES
 # -------------------------
 def now_ts():
     return int(time.time())
@@ -117,159 +104,14 @@ def is_authorized(member: discord.Member):
     return any(ROLES.get(k) and ROLES[k] in role_ids for k in ("queen", "clan_master", "og_impedance"))
 
 # -------------------------
-# === BUTTON VIEW (POLL) ===
-# -------------------------
-class AdminDecisionView(discord.ui.View):
-    def __init__(self, recruit_uid: str, created_at: int, timeout=POLL_DURATION_SECONDS):
-        super().__init__(timeout=timeout)
-        self.recruit_uid = recruit_uid
-        self.created_at = created_at
-        self.resolved = False
-
-    async def _resolve(self, interaction: discord.Interaction, decision: str):
-        # FIX: Only first authorized admin click resolves. Ignore others.
-        if self.resolved:
-            try:
-                await interaction.response.send_message("This poll was already resolved.", ephemeral=True)
-            except Exception:
-                pass
-            return
-
-        reactor = interaction.user
-        if not is_authorized(reactor):
-            try:
-                await interaction.response.send_message("You are not authorized to decide on recruits.", ephemeral=True)
-            except Exception:
-                pass
-            return
-
-        # Mark resolved
-        self.resolved = True
-        uid = self.recruit_uid
-        entry = pending_recruits.get(uid)
-        staff_ch = client.get_channel(CHANNELS["staff_review"])
-        guild = interaction.guild
-
-        # robust fetch of recruit: try guild.fetch_member first, else client.fetch_user
-        recruit_member = None
-        recruit_display = f"ID {uid}"
-        try:
-            if guild:
-                try:
-                    recruit_member = await guild.fetch_member(int(uid))
-                except discord.NotFound:
-                    recruit_member = None
-                except Exception:
-                    # fallback to get_member
-                    try:
-                        recruit_member = guild.get_member(int(uid))
-                    except Exception:
-                        recruit_member = None
-            if recruit_member:
-                recruit_display = f"{recruit_member.display_name} (@{recruit_member.name})"
-            else:
-                try:
-                    user_obj = await client.fetch_user(int(uid))
-                    recruit_display = f"{user_obj.name} (@{user_obj.name})"
-                except Exception:
-                    recruit_display = f"ID {uid}"
-        except Exception:
-            recruit_display = f"ID {uid}"
-
-        approver_text = approver_label(reactor)
-
-        # Perform action
-        if decision == "kick":
-            try:
-                if recruit_member:
-                    await recruit_member.kick(reason="Rejected by admin vote")
-                    # DM recruit if possible
-                    try:
-                        dm = await recruit_member.create_dm()
-                        await dm.send("We are sorry to inform you that your application was rejected. Thank you for your interest in joining Impedance.")
-                    except Exception:
-                        pass
-                if staff_ch:
-                    embed = discord.Embed(
-                        title=f"🪖 Recruit {recruit_display} kicked out of Impedance",
-                        description=f"Recruit was removed due to refusal or inactivity.\n\nApproved by: {approver_text}",
-                        color=discord.Color.red()
-                    )
-                    await staff_ch.send(embed=embed)
-                print(f"📢 Recruit {uid} kicked by {approver_text}")
-            except Exception as e:
-                print(f"⚠️ Failed to kick recruit {uid}: {e}")
-
-        elif decision == "pardon":
-            try:
-                if staff_ch:
-                    embed = discord.Embed(
-                        title=f"🪖 Recruit {recruit_display} pardoned",
-                        description=f"Recruit was pardoned and will remain in the server.\n\nApproved by: {approver_text}",
-                        color=discord.Color.green()
-                    )
-                    await staff_ch.send(embed=embed)
-                print(f"📢 Recruit {uid} pardoned by {approver_text}")
-            except Exception as e:
-                print(f"⚠️ Failed to post pardon for {uid}: {e}")
-
-        # Cleanup pending and delete public notice if exists
-        if uid in pending_recruits:
-            try:
-                notice_msg_id = pending_recruits[uid].get("notify_msg")
-                if notice_msg_id:
-                    try:
-                        recruit_ch = client.get_channel(CHANNELS["recruit"])
-                        if recruit_ch:
-                            m = await recruit_ch.fetch_message(notice_msg_id)
-                            await m.delete()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            try:
-                del pending_recruits[uid]
-                save_json(PENDING_FILE, pending_recruits)
-            except Exception:
-                pass
-
-        # disable buttons then delete poll message (we'll attempt both)
-        for child in self.children:
-            child.disabled = True
-        try:
-            await interaction.message.edit(view=self)
-        except Exception:
-            pass
-
-        # delete the poll message (requested)
-        try:
-            await interaction.message.delete()
-        except Exception:
-            pass
-
-        # acknowledge actor
-        try:
-            await interaction.response.send_message(f"Decision recorded: **{decision.upper()}** — approved by {approver_text}", ephemeral=True)
-        except Exception:
-            pass
-
-    @discord.ui.button(label="Kick recruit", style=discord.ButtonStyle.danger, custom_id="kick_button")
-    async def kick_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await self._resolve(interaction, "kick")
-
-    @discord.ui.button(label="Pardon recruit", style=discord.ButtonStyle.success, custom_id="pardon_button")
-    async def pardon_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await self._resolve(interaction, "pardon")
-
-# -------------------------
-# === EVENTS ===
+# EVENTS
 # -------------------------
 @client.event
 async def on_ready():
     global state, pending_recruits
     state = load_json(STATE_FILE, state)
     pending_recruits = load_json(PENDING_FILE, pending_recruits)
-    # Start inactivity checker exactly once
+    # start inactivity checker
     try:
         client.loop.create_task(inactivity_checker())
         print("🟢 inactivity_checker task started.")
@@ -279,19 +121,17 @@ async def on_ready():
 
 @client.event
 async def on_member_join(member):
-    """Announce join, send DM questionnaire, create pending entry."""
     recruit_ch = client.get_channel(CHANNELS["recruit"])
     if not recruit_ch:
         print("⚠️ Recruit channel not found.")
         return
 
-    # Announce new recruit
+    # announce and public notice
     try:
         await recruit_ch.send(f"🎉 Everyone welcome {member.mention} to the server!")
     except Exception:
         pass
 
-    # Notify recruit in channel (will be deleted later)
     notice_id = None
     try:
         notice = await recruit_ch.send(f"🪖 {member.mention}, I have sent you a DM. Please check your DMs.")
@@ -312,7 +152,7 @@ async def on_member_join(member):
     save_json(PENDING_FILE, pending_recruits)
     print(f"📨 Started interview for recruit {member.display_name} (uid={uid})")
 
-    # DM interview
+    # DM interview flow
     try:
         dm = await member.create_dm()
         await dm.send("🪖 Welcome to **Impedance!** Please answer the following approval questions one by one:")
@@ -323,10 +163,9 @@ async def on_member_join(member):
                 reply = await client.wait_for(
                     "message",
                     check=lambda m: m.author.id == member.id and isinstance(m.channel, discord.DMChannel),
-                    timeout=600  # 10 minutes per question
+                    timeout=600  # 10 minutes
                 )
             except asyncio.TimeoutError:
-                # did not answer in time for this question; leave entry and let inactivity checker escalate
                 pending_recruits[uid]["last_active"] = now_ts()
                 save_json(PENDING_FILE, pending_recruits)
                 try:
@@ -335,32 +174,31 @@ async def on_member_join(member):
                     pass
                 print(f"⌛ Recruit {member.display_name} timed out during interview.")
                 return
-            # record
             pending_recruits[uid]["answers"].append(reply.content.strip())
             pending_recruits[uid]["last_active"] = now_ts()
             save_json(PENDING_FILE, pending_recruits)
 
-        # Completed all questions
+        # Completed
         try:
             await dm.send("✅ Thank you for your cooperation! Your answers will be reviewed by our admins. Please wait for further instructions.")
         except Exception:
             pass
 
-        # FIX: delete the public recruit notice now that answers are complete
+        # delete public notice if present
         try:
-            notice_msg_id = pending_recruits.get(uid, {}).get("notify_msg")
-            if notice_msg_id:
+            nid = pending_recruits.get(uid, {}).get("notify_msg")
+            if nid:
                 recruit_ch = client.get_channel(CHANNELS["recruit"])
                 if recruit_ch:
                     try:
-                        msg = await recruit_ch.fetch_message(notice_msg_id)
+                        msg = await recruit_ch.fetch_message(nid)
                         await msg.delete()
                     except Exception:
                         pass
         except Exception:
             pass
 
-        # Send formatted answers to admin review channel (for record)
+        # send answers to admin channel for record
         admin_ch = client.get_channel(CHANNELS["staff_review"])
         if admin_ch:
             now_str = readable_now()
@@ -380,7 +218,7 @@ async def on_member_join(member):
             )
             await admin_ch.send(embed=embed)
 
-        # mark resolved and remove pending
+        # resolved & cleanup
         pending_recruits[uid]["resolved"] = True
         save_json(PENDING_FILE, pending_recruits)
         if uid in pending_recruits:
@@ -389,7 +227,7 @@ async def on_member_join(member):
         print(f"✅ Completed interview for recruit {member.display_name} (uid={uid})")
 
     except Exception as e:
-        # DM failed or blocked — escalate immediately to admin poll
+        # DM failed -> escalate to admin review
         print(f"⚠️ Could not DM {member.display_name}: {e}")
         admin_ch = client.get_channel(CHANNELS["staff_review"])
         display_name = f"{member.display_name} (@{member.name})"
@@ -399,20 +237,19 @@ async def on_member_join(member):
                 description=(
                     "Could not DM recruit or recruit blocked DMs.\n\n"
                     "Should the recruit be rejected and kicked out of the clan server?\n"
-                    "Please vote below (authorized admins only)."
+                    "React 👍 to kick, 👎 to pardon. (Only admins with special roles may decide.)"
                 ),
                 color=discord.Color.dark_gold()
             )
-            view = AdminDecisionView(recruit_uid=uid, created_at=now_ts())
             try:
-                poll_msg = await admin_ch.send(embed=embed, view=view)
-                view.message = poll_msg
+                review_msg = await admin_ch.send(embed=embed)
+                # Do NOT add reactions programmatically to avoid bot reacting to itself.
                 pending_recruits[uid]["under_review"] = True
-                pending_recruits[uid]["review_message_id"] = poll_msg.id
+                pending_recruits[uid]["review_message_id"] = review_msg.id
                 save_json(PENDING_FILE, pending_recruits)
-                print(f"📣 Posted immediate admin poll for DM-blocked recruit {display_name} (uid={uid})")
+                print(f"📣 Posted admin review for DM-blocked recruit {display_name} (uid={uid})")
             except Exception as e2:
-                print(f"⚠️ Failed to post admin poll: {e2}")
+                print(f"⚠️ Failed to post admin review: {e2}")
 
         # notify recruit channel
         try:
@@ -423,10 +260,8 @@ async def on_member_join(member):
 
 @client.event
 async def on_message(message):
-    # ignore bot itself
     if message.author.id == client.user.id:
         return
-    # Reminder channel logic
     if message.channel.id == CHANNELS["reminder"]:
         state["message_counter"] = state.get("message_counter", 0) + 1
         save_json(STATE_FILE, state)
@@ -472,7 +307,160 @@ async def on_presence_update(before, after):
         print(f"⚠️ Error in presence handler: {e}")
 
 # -------------------------
-# === INACTIVITY CHECKER ===
+# REACTION HANDLER (first authorized admin reaction wins)
+# -------------------------
+@client.event
+async def on_raw_reaction_add(payload):
+    try:
+        # ignore bot's own reactions
+        if payload.user_id == client.user.id:
+            return
+
+        # only consider staff review channel
+        if payload.channel_id != CHANNELS["staff_review"]:
+            return
+
+        # find matching pending entry
+        for uid, entry in list(pending_recruits.items()):
+            if not entry.get("under_review") or entry.get("resolved"):
+                continue
+            if entry.get("review_message_id") != payload.message_id:
+                continue
+
+            # get guild and reactor member
+            guild = None
+            if payload.guild_id:
+                guild = client.get_guild(payload.guild_id)
+            if guild is None:
+                return
+
+            reactor = guild.get_member(payload.user_id)
+            if reactor is None:
+                # try fetch
+                try:
+                    reactor_user = await client.fetch_user(payload.user_id)
+                    # can't fetch member object without guild member
+                    # so treat as unauthorized
+                except Exception:
+                    pass
+                return
+
+            # only allow special-role reactors
+            if not is_authorized(reactor):
+                print(f"🚫 Unauthorized reactor {reactor.display_name}; ignored.")
+                return
+
+            # determine decision from emoji
+            emoji = None
+            # payload.emoji.name for unicode vs custom
+            try:
+                emoji = payload.emoji.name if hasattr(payload.emoji, "name") else str(payload.emoji)
+            except Exception:
+                emoji = str(payload.emoji)
+            is_kick = False
+            is_pardon = False
+            if emoji in ("👍", "+1", "thumbsup"):
+                is_kick = True
+            elif emoji in ("👎", "thumbsdown"):
+                is_pardon = True
+            else:
+                # ignore other emojis
+                return
+
+            # only first valid reaction processed
+            if entry.get("resolved"):
+                return
+            entry["resolved"] = True
+            save_json(PENDING_FILE, pending_recruits)
+
+            # determine recruit display
+            recruit_display = f"ID {uid}"
+            recruit_member = None
+            try:
+                # try to find in guild
+                recruit_member = guild.get_member(int(uid))
+                if recruit_member:
+                    recruit_display = f"{recruit_member.display_name} (@{recruit_member.name})"
+                else:
+                    # fetch user fallback
+                    try:
+                        user_obj = await client.fetch_user(int(uid))
+                        recruit_display = f"{user_obj.name} (@{user_obj.name})"
+                    except Exception:
+                        recruit_display = f"ID {uid}"
+            except Exception:
+                recruit_display = f"ID {uid}"
+
+            approver_text = approver_label(reactor)
+            staff_ch = client.get_channel(CHANNELS["staff_review"])
+
+            if is_kick:
+                kicked_display = recruit_display
+                try:
+                    if recruit_member:
+                        await recruit_member.kick(reason="Rejected by admin vote")
+                        # DM recruit if possible
+                        try:
+                            dm = await recruit_member.create_dm()
+                            await dm.send("We are sorry to inform you that your application was rejected. Thank you for your interest in joining Impedance.")
+                        except Exception:
+                            pass
+                    if staff_ch:
+                        embed = discord.Embed(
+                            title=f"🪖 Recruit {kicked_display} kicked out of Impedance",
+                            description=f"Recruit was removed due to refusal or inactivity.\n\nApproved by: {approver_text}",
+                            color=discord.Color.red()
+                        )
+                        await staff_ch.send(embed=embed)
+                except Exception as e:
+                    print(f"⚠️ Failed to kick recruit {uid}: {e}")
+
+            elif is_pardon:
+                pardoned_display = recruit_display
+                if staff_ch:
+                    embed = discord.Embed(
+                        title=f"🪖 Recruit {pardoned_display} pardoned",
+                        description=f"Recruit was pardoned and will remain in the server.\n\nApproved by: {approver_text}",
+                        color=discord.Color.green()
+                    )
+                    await staff_ch.send(embed=embed)
+
+            # cleanup pending and delete public notice if any
+            try:
+                notice_msg_id = entry.get("notify_msg")
+                if notice_msg_id:
+                    try:
+                        recruit_ch = client.get_channel(CHANNELS["recruit"])
+                        if recruit_ch:
+                            msg = await recruit_ch.fetch_message(notice_msg_id)
+                            await msg.delete()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # remove pending record
+            try:
+                if uid in pending_recruits:
+                    del pending_recruits[uid]
+                    save_json(PENDING_FILE, pending_recruits)
+            except Exception:
+                pass
+
+            # delete the review message so it's no longer active (optional)
+            try:
+                review_msg = await client.get_channel(payload.channel_id).fetch_message(payload.message_id)
+                await review_msg.delete()
+            except Exception:
+                pass
+
+            return
+
+    except Exception as e:
+        print(f"⚠️ Error in on_raw_reaction_add: {e}")
+
+# -------------------------
+# INACTIVITY CHECKER
 # -------------------------
 async def inactivity_checker():
     await client.wait_until_ready()
@@ -480,20 +468,17 @@ async def inactivity_checker():
     while not client.is_closed():
         try:
             now = now_ts()
-            # debug print: how many pending recruits
             try:
                 print(f"🔍 Checking pending recruits: count={len(pending_recruits)}")
             except Exception:
                 pass
 
             for uid, entry in list(pending_recruits.items()):
-                # skip resolved or already under review
                 if entry.get("resolved") or entry.get("under_review"):
                     continue
                 last = entry.get("last_active", entry.get("started_at", now))
-                # if idle >= 10 minutes -> create poll
-                if now - last >= 600:
-                    print(f"🔔 Escalating recruit uid={uid} (idle sec={now-last})")
+                if now - last >= 600:  # 10 minutes
+                    print(f"🔔 Escalating recruit uid={uid} (idle={now-last}s)")
                     # delete public recruit notice if exists
                     try:
                         recruit_ch = client.get_channel(CHANNELS["recruit"])
@@ -507,9 +492,7 @@ async def inactivity_checker():
                         pass
 
                     staff_ch = client.get_channel(CHANNELS["staff_review"])
-                    # get display name if possible
                     display_name = None
-                    guild = None
                     if staff_ch:
                         guild = staff_ch.guild
                         try:
@@ -519,11 +502,10 @@ async def inactivity_checker():
                         except Exception:
                             display_name = None
 
-                    # fallback using fetch_user if not found in guild
                     if display_name is None:
                         try:
-                            user_obj = await client.fetch_user(int(uid))
-                            display_name = f"{user_obj.name} (@{user_obj.name})"
+                            u = await client.fetch_user(int(uid))
+                            display_name = f"{u.name} (@{u.name})"
                         except Exception:
                             display_name = f"ID {uid}"
 
@@ -533,27 +515,26 @@ async def inactivity_checker():
                             description=(
                                 "Recruit has not answered or refused to answer within 10 minutes.\n\n"
                                 "Should the recruit be rejected and kicked out of the clan?\n"
-                                "Please vote below (authorized admins only)."
+                                "React 👍 to kick, 👎 to pardon. (Only admins with special roles may decide.)"
                             ),
                             color=discord.Color.dark_gold()
                         )
-                        view = AdminDecisionView(recruit_uid=uid, created_at=now)
                         try:
-                            poll_msg = await staff_ch.send(embed=embed, view=view)
-                            view.message = poll_msg
+                            review_msg = await staff_ch.send(embed=embed)
+                            # Do NOT add reactions programmatically
                             entry["under_review"] = True
-                            entry["review_message_id"] = poll_msg.id
+                            entry["review_message_id"] = review_msg.id
                             save_json(PENDING_FILE, pending_recruits)
-                            print(f"📣 Posted admin poll for uid={uid}")
+                            print(f"📣 Posted admin review for uid={uid}")
                         except Exception as e:
-                            print(f"⚠️ Failed to post admin poll for uid {uid}: {e}")
+                            print(f"⚠️ Failed to post admin review for uid {uid}: {e}")
             await asyncio.sleep(30)
         except Exception as e:
             print(f"⚠️ Error in inactivity_checker: {e}")
             await asyncio.sleep(30)
 
 # -------------------------
-# === RUN BOT ===
+# RUN
 # -------------------------
 def run_bot():
     token = os.getenv("DISCORD_TOKEN")
@@ -564,11 +545,9 @@ def run_bot():
     time.sleep(5)
     client.run(token)
 
-# run bot thread so Flask is main process for Render
 threading.Thread(target=run_bot, daemon=True).start()
 
 if __name__ == "__main__":
-    # start self-pinger from keep_alive (if provided)
     try:
         from keep_alive import ping_self
         threading.Thread(target=ping_self, daemon=True).start()
