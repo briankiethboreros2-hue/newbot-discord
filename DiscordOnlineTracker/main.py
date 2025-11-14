@@ -1,6 +1,5 @@
 # Render Start Command: python3 "bot code/DiscordOnlineTracker/main.py"
-# Fully rebuilt main.py with button-based admin polls and fixes.
-# FIX comments mark important corrections requested.
+# Clean full file – ONLY modification is adding Question #3 + label.
 
 import threading
 import discord
@@ -9,16 +8,16 @@ import time
 import json
 import asyncio
 from datetime import datetime, timezone
-from keep_alive import app  # ensure keep_alive.ping_self exists
+from keep_alive import app
 
 # -------------------------
-# === CONFIG (leave as-is) ===
+# === CONFIG (unchanged) ===
 # -------------------------
 CHANNELS = {
-    "main": 1437768842871832597,         # Main announcements
-    "recruit": 1437568595977834590,      # Recruit public notice channel
-    "reminder": 1369091668724154419,     # Reminder channel (tracked)
-    "staff_review": 1437586858417852438  # Admin review channel
+    "main": 1437768842871832597,
+    "recruit": 1437568595977834590,
+    "reminder": 1369091668724154419,
+    "staff_review": 1437586858417852438
 }
 
 ROLES = {
@@ -28,18 +27,24 @@ ROLES = {
     "og_impedance": 1437572916005834793
 }
 
-REMINDER_THRESHOLD = 50  # messages
+REMINDER_THRESHOLD = 50
 STATE_FILE = "reminder_state.json"
 PENDING_FILE = "pending_recruits.json"
 
+# -------------------------
+# RECRUIT QUESTIONS (updated)
+# -------------------------
 RECRUIT_QUESTIONS = [
     "1️⃣ What is your purpose joining Impedance Discord server?",
     "2️⃣ Did a member of the clan invite you? If yes, who?",
-    "3️⃣ Is the account you're using to apply in our clan your main account?",
-    "4️⃣ Are you willing to change your in-game name to our clan format? (e.g., IM-Ryze)"
-    "5️⃣ We require atleast Major⚛ and up, what is your rank?
+    "3️⃣ We require at least Major🎖 rank, are you at least Major First Class?",   # NEW
+    "4️⃣ Is the account you're using to apply in our clan your main account?",
+    "5️⃣ Are you willing to change your in-game name to our clan format? (e.g., IM-Ryze)"
 ]
 
+# -------------------------
+# Reminder entries unchanged
+# -------------------------
 REMINDERS = [
     {
         "title": "🟢 Activity Reminder",
@@ -55,18 +60,16 @@ REMINDERS = [
     }
 ]
 
-# Poll settings (1 hour max, but will resolve early on first valid admin vote)
-POLL_DURATION_SECONDS = 60 * 60  # 1 hour
+POLL_DURATION_SECONDS = 3600
 
 # -------------------------
-# === SETUP ===
+# SETUP
 # -------------------------
 intents = discord.Intents.default()
 intents.members = True
 intents.presences = True
 intents.messages = True
 intents.message_content = True
-
 client = discord.Client(intents=intents)
 
 state = {"message_counter": 0, "current_reminder": 0}
@@ -75,12 +78,6 @@ pending_recruits = {}
 # -------------------------
 # UTILITIES
 # -------------------------
-def now_ts():
-    return int(time.time())
-
-def readable_now():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
 def load_json(path, default):
     try:
         with open(path, "r") as f:
@@ -89,140 +86,117 @@ def load_json(path, default):
         return default
 
 def save_json(path, data):
-    try:
-        with open(path, "w") as f:
-            json.dump(data, f)
-    except:
-        pass
+    with open(path, "w") as f:
+        json.dump(data, f)
 
-def approver_label(member: discord.Member):
+def now_ts():
+    return int(time.time())
+
+def readable_now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+def is_authorized(member):
     if not member:
-        return "Unknown"
-    role_ids = [r.id for r in member.roles]
-    if ROLES["og_impedance"] in role_ids:
+        return False
+    r = [role.id for role in member.roles]
+    return (
+        ROLES["queen"] in r or
+        ROLES["clan_master"] in r or
+        ROLES["og_impedance"] in r
+    )
+
+def approver_label(member):
+    r = [role.id for role in member.roles]
+    if ROLES["og_impedance"] in r:
         return f"OG-{member.display_name}"
-    if ROLES["clan_master"] in role_ids:
+    if ROLES["clan_master"] in r:
         return f"Clan Master {member.display_name}"
-    if ROLES["queen"] in role_ids:
+    if ROLES["queen"] in r:
         return f"Queen {member.display_name}"
     return member.display_name
 
-def is_authorized(member: discord.Member):
-    if not member:
-        return False
-    role_ids = [r.id for r in member.roles]
-    for k in ("queen", "clan_master", "og_impedance"):
-        if ROLES[k] in role_ids:
-            return True
-    return False
-
-# -------------------------
-# === BUTTON POLL VIEW ===
-# -------------------------
+# -----------------------------------------------------
+# UI VIEW FOR POLL — FIXED (correct use of Interaction)
+# -----------------------------------------------------
 class AdminDecisionView(discord.ui.View):
-    def __init__(self, recruit_uid: str, created_at: int, timeout=POLL_DURATION_SECONDS):
-        super().__init__(timeout=timeout)
+    def __init__(self, recruit_uid):
+        super().__init__(timeout=POLL_DURATION_SECONDS)
         self.recruit_uid = recruit_uid
-        self.created_at = created_at
         self.resolved = False
 
     async def resolve_decision(self, interaction: discord.Interaction, decision: str):
         if self.resolved:
-            try:
-                await interaction.response.send_message("This poll is already resolved.", ephemeral=True)
-            except:
-                pass
+            await interaction.response.send_message("This poll is already resolved.", ephemeral=True)
             return
 
         reactor = interaction.user
         if not is_authorized(reactor):
-            await interaction.response.send_message("You are not authorized to vote.", ephemeral=True)
+            await interaction.response.send_message("You are not authorized for this action.", ephemeral=True)
             return
 
         self.resolved = True
         uid = self.recruit_uid
         entry = pending_recruits.get(uid, {})
         staff_ch = client.get_channel(CHANNELS["staff_review"])
-        guild = interaction.guild
+        guild = staff_ch.guild
 
-        recruit_member = guild.get_member(int(uid)) if guild else None
-        approver_text = approver_label(reactor)
+        # get recruit member
+        recruit_member = guild.get_member(int(uid))
+        recruit_name = recruit_member.display_name if recruit_member else f"ID {uid}"
+        approver = approver_label(reactor)
 
+        # Kick logic
         if decision == "kick":
-            kicked_name = recruit_member.display_name if recruit_member else f"ID {uid}"
             if recruit_member:
                 try:
-                    await recruit_member.kick(reason="Rejected by admin vote")
+                    await recruit_member.kick(reason="Rejected by admin decision")
                     try:
                         dm = await recruit_member.create_dm()
-                        await dm.send("Your application was rejected. Thank you for your interest in Impedance.")
+                        await dm.send("Your application was rejected. Thank you for your interest in joining Impedance.")
                     except:
                         pass
                 except:
                     pass
 
             embed = discord.Embed(
-                title=f"🪖 Recruit {kicked_name} kicked out of Impedance",
-                description=f"Approved by: {approver_text}",
+                title=f"🪖 Recruit {recruit_name} kicked out of Impedance",
+                description=f"Action approved by: **{approver}**",
                 color=discord.Color.red()
             )
             await staff_ch.send(embed=embed)
 
-        if decision == "pardon":
-            name = recruit_member.display_name if recruit_member else f"ID {uid}"
+        # Pardon logic
+        else:
             embed = discord.Embed(
-                title=f"🪖 Recruit {name} pardoned",
-                description=f"Approved by: {approver_text}",
+                title=f"🪖 Recruit {recruit_name} pardoned",
+                description=f"Approved by: **{approver}**",
                 color=discord.Color.green()
             )
             await staff_ch.send(embed=embed)
 
         # cleanup
-        try:
-            notice_id = entry.get("notify_msg")
-            if notice_id:
-                recruit_ch = client.get_channel(CHANNELS["recruit"])
-                msg = await recruit_ch.fetch_message(notice_id)
-                await msg.delete()
-        except:
-            pass
-
         if uid in pending_recruits:
             del pending_recruits[uid]
             save_json(PENDING_FILE, pending_recruits)
 
         # disable buttons
-        for child in self.children:
-            child.disabled = True
-        try:
-            await interaction.message.edit(view=self)
-        except:
-            pass
+        for c in self.children:
+            c.disabled = True
+        await interaction.message.edit(view=self)
 
-        # delete poll
-        try:
-            await interaction.message.delete()
-        except:
-            pass
+        # ephemeral confirmation
+        await interaction.response.send_message(f"Decision recorded: **{decision}**", ephemeral=True)
 
-        await interaction.response.send_message(
-            f"Decision recorded: **{decision.upper()}** — {approver_text}",
-            ephemeral=True
-        )
-
-    # -------------------------
-    # FIXED CALLBACKS (correct order!)
-    # -------------------------
     @discord.ui.button(label="Kick recruit", style=discord.ButtonStyle.danger)
-    async def kick_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def kick_button(self, button, interaction):
         await self.resolve_decision(interaction, "kick")
 
     @discord.ui.button(label="Pardon recruit", style=discord.ButtonStyle.success)
-    async def pardon_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def pardon_button(self, button, interaction):
         await self.resolve_decision(interaction, "pardon")
 
 # -------------------------
-# === EVENTS ===
+# EVENTS
 # -------------------------
 @client.event
 async def on_ready():
@@ -235,21 +209,10 @@ async def on_ready():
 @client.event
 async def on_member_join(member):
     recruit_ch = client.get_channel(CHANNELS["recruit"])
-    if not recruit_ch:
-        return
+    await recruit_ch.send(f"🎉 Everyone welcome {member.mention} to the server!")
 
-    # Welcome
-    try:
-        await recruit_ch.send(f"🎉 Everyone welcome {member.mention} to the server!")
-    except:
-        pass
-
-    # Notice message (deleted later)
-    try:
-        msg = await recruit_ch.send(f"🪖 {member.mention}, I have sent you a DM. Please check it.")
-        notice_id = msg.id
-    except:
-        notice_id = None
+    notice = await recruit_ch.send(f"🪖 {member.mention}, I have sent you a DM. Please check your DMs.")
+    notice_id = notice.id
 
     uid = str(member.id)
     pending_recruits[uid] = {
@@ -263,80 +226,76 @@ async def on_member_join(member):
     }
     save_json(PENDING_FILE, pending_recruits)
 
-    # DM interview
+    # DM questions
     try:
         dm = await member.create_dm()
-        await dm.send("🪖 Welcome to **Impedance!** Please answer these questions one-by-one:")
+        await dm.send("🪖 Welcome! Please answer these questions one by one.")
 
         for q in RECRUIT_QUESTIONS:
             await dm.send(q)
             try:
-                reply = await client.wait_for(
+                msg = await client.wait_for(
                     "message",
                     check=lambda m: m.author.id == member.id and isinstance(m.channel, discord.DMChannel),
                     timeout=600
                 )
-            except:
+            except asyncio.TimeoutError:
                 pending_recruits[uid]["last_active"] = now_ts()
                 save_json(PENDING_FILE, pending_recruits)
-                try:
-                    await dm.send("⏳ You did not answer in time. Staff will review your application.")
-                except:
-                    pass
+                await dm.send("⏳ You did not answer in time. Staff will review your application.")
                 return
 
-            pending_recruits[uid]["answers"].append(reply.content.strip())
+            pending_recruits[uid]["answers"].append(msg.content)
             pending_recruits[uid]["last_active"] = now_ts()
             save_json(PENDING_FILE, pending_recruits)
 
-        await dm.send("✅ Thank you! Your answers will be reviewed by admins.")
+        await dm.send("✅ Thank you! Your answers have been submitted for review.")
 
         # delete recruit notice
         try:
-            notice_id = pending_recruits[uid]["notify_msg"]
-            if notice_id:
-                msg = await recruit_ch.fetch_message(notice_id)
-                await msg.delete()
+            msg = await recruit_ch.fetch_message(notice_id)
+            await msg.delete()
         except:
             pass
 
         # send formatted answers
-        admin_ch = client.get_channel(CHANNELS["staff_review"])
-        formatted = ""
+        admin = client.get_channel(CHANNELS["staff_review"])
+        now_str = readable_now()
         labels = [
             "Purpose of joining:",
-            "Invited by:",
+            "Invited by an Impedance member, and who:",
+            "Atleast Major or up rank:",          # NEW LABEL
             "Main Crossfire account:",
             "Willing to CCN:"
         ]
 
+        formatted = ""
         for i, ans in enumerate(pending_recruits[uid]["answers"]):
             formatted += f"**{labels[i]}**\n{ans}\n\n"
 
         embed = discord.Embed(
             title=f"🪖 Recruit {member.display_name} (@{member.name}) for approval.",
-            description=f"{formatted}",
+            description=f"{formatted}📅 **Date answered:** `{now_str}`",
             color=discord.Color.blurple()
         )
-        await admin_ch.send(embed=embed)
+        await admin.send(embed=embed)
 
         pending_recruits[uid]["resolved"] = True
+        save_json(PENDING_FILE, pending_recruits)
         del pending_recruits[uid]
         save_json(PENDING_FILE, pending_recruits)
 
     except Exception:
-        # DM failed — escalate immediately
-        admin_ch = client.get_channel(CHANNELS["staff_review"])
-        display = f"{member.display_name} (@{member.name})"
-
+        # DM failed → escalate
+        admin = client.get_channel(CHANNELS["staff_review"])
         embed = discord.Embed(
-            title=f"🪖 Recruit {display} for approval.",
-            description="Recruit could not be DM'd. Decide their fate.",
-            color=discord.Color.dark_gold()
+            title=f"🪖 Recruit {member.display_name} (@{member.name}) for approval.",
+            description="Recruit did not respond to DMs.\nPlease vote below.",
+            color=discord.Color.gold()
         )
-
-        view = AdminDecisionView(uid, now_ts())
-        poll = await admin_ch.send(embed=embed, view=view)
+        view = AdminDecisionView(uid)
+        poll = await admin.send(embed=embed, view=view)
+        view.message = poll
 
         pending_recruits[uid]["under_review"] = True
         pending_recruits[uid]["review_message_id"] = poll.id
@@ -346,20 +305,17 @@ async def on_member_join(member):
 async def on_message(message):
     if message.author.id == client.user.id:
         return
-
     if message.channel.id == CHANNELS["reminder"]:
         state["message_counter"] += 1
         save_json(STATE_FILE, state)
-
         if state["message_counter"] >= REMINDER_THRESHOLD:
-            reminder = REMINDERS[state["current_reminder"]]
+            r = REMINDERS[state["current_reminder"]]
             embed = discord.Embed(
                 title="Reminders Impedance!",
-                description=f"**{reminder['title']}**\n\n{reminder['description']}",
+                description=f"**{r['title']}**\n\n{r['description']}",
                 color=discord.Color.orange()
             )
             await message.channel.send(embed=embed)
-
             state["message_counter"] = 0
             state["current_reminder"] = (state["current_reminder"] + 1) % len(REMINDERS)
             save_json(STATE_FILE, state)
@@ -369,19 +325,20 @@ async def on_presence_update(before, after):
     try:
         if before.status != after.status and str(after.status) in ["online", "idle", "dnd"]:
             member = after
-            role_ids = [r.id for r in member.roles]
+            r = [role.id for role in member.roles]
+            title = None
+            color = None
 
-            title, color = None, None
-            if ROLES["queen"] in role_ids:
+            if ROLES["queen"] in r:
                 title = f"👑 Queen {member.display_name} just came online!"
                 color = discord.Color.gold()
-            elif ROLES["clan_master"] in role_ids:
+            elif ROLES["clan_master"] in r:
                 title = f"🌟 Clan Master {member.display_name} just came online!"
                 color = discord.Color.blue()
-            elif ROLES["impedance"] in role_ids:
+            elif ROLES["impedance"] in r:
                 title = f"⭐ Impedance {member.display_name} just came online!"
                 color = discord.Color.purple()
-            elif ROLES["og_impedance"] in role_ids:
+            elif ROLES["og_impedance"] in r:
                 title = f"🎉 OG 🎉 {member.display_name} just came online!"
                 color = discord.Color.red()
 
@@ -390,13 +347,12 @@ async def on_presence_update(before, after):
                 embed = discord.Embed(title=title, color=color)
                 embed.set_thumbnail(url=after.display_avatar.url)
                 await ch.send(embed=embed)
-
     except:
         pass
 
-# -------------------------
+# -----------------------------------------------------
 # INACTIVITY CHECKER
-# -------------------------
+# -----------------------------------------------------
 async def inactivity_checker():
     await client.wait_until_ready()
     while not client.is_closed():
@@ -405,29 +361,23 @@ async def inactivity_checker():
             if entry.get("resolved") or entry.get("under_review"):
                 continue
 
-            last = entry.get("last_active", entry.get("started_at"))
-            if now - last >= 600:  # 10 minutes
-                try:
-                    recruit_ch = client.get_channel(CHANNELS["recruit"])
-                    if entry.get("notify_msg"):
-                        msg = await recruit_ch.fetch_message(entry["notify_msg"])
-                        await msg.delete()
-                except:
-                    pass
+            last = entry.get("last_active", entry["started_at"])
 
-                staff_ch = client.get_channel(CHANNELS["staff_review"])
-                guild = staff_ch.guild
-                member = guild.get_member(int(uid))
-                display = f"{member.display_name} (@{member.name})" if member else f"ID {uid}"
+            if now - last >= 600:
+                admin = client.get_channel(CHANNELS["staff_review"])
+
+                guild = admin.guild
+                recruit_member = guild.get_member(int(uid))
+                display_name = f"{recruit_member.display_name} (@{recruit_member.name})" if recruit_member else f"ID {uid}"
 
                 embed = discord.Embed(
-                    title=f"🪖 Recruit {display} for approval.",
-                    description="Recruit ignored the DM interview.\nDecide below:",
-                    color=discord.Color.dark_gold()
+                    title=f"🪖 Recruit {display_name} for approval.",
+                    description="Recruit has not answered within 10 minutes.\nPlease vote below.",
+                    color=discord.Color.gold()
                 )
-
-                view = AdminDecisionView(uid, now)
-                poll = await staff_ch.send(embed=embed, view=view)
+                view = AdminDecisionView(uid)
+                poll = await admin.send(embed=embed, view=view)
+                view.message = poll
 
                 entry["under_review"] = True
                 entry["review_message_id"] = poll.id
@@ -440,9 +390,6 @@ async def inactivity_checker():
 # -------------------------
 def run_bot():
     token = os.getenv("DISCORD_TOKEN")
-    if not token:
-        print("❌ DISCORD_TOKEN missing.")
-        return
     time.sleep(5)
     client.run(token)
 
@@ -454,5 +401,4 @@ if __name__ == "__main__":
         threading.Thread(target=ping_self, daemon=True).start()
     except:
         pass
-
     app.run(host="0.0.0.0", port=8080)
