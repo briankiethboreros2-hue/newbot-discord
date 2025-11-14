@@ -1,6 +1,6 @@
 # Render Start Command: python3 "bot code/DiscordOnlineTracker/main.py"
-# Fully rebuilt main.py with button-based admin polls and fixes.
-# FIX comments mark important corrections requested.
+# Fixed full main.py — inactivity checker, proper member fetch, poll resolution, and cleanup.
+# Keep your existing keep_alive.py in the same repo.
 
 import threading
 import discord
@@ -9,7 +9,7 @@ import time
 import json
 import asyncio
 from datetime import datetime, timezone
-from keep_alive import app  # ensure keep_alive.ping_self exists
+from keep_alive import app  # keep_alive.ping_self should exist
 
 # -------------------------
 # === CONFIG (leave as-is) ===
@@ -54,7 +54,7 @@ REMINDERS = [
     }
 ]
 
-# Poll settings (1 hour max, but will resolve early on first valid admin vote)
+# Poll settings (1 hour max, will resolve early on first valid admin vote)
 POLL_DURATION_SECONDS = 60 * 60  # 1 hour
 
 # -------------------------
@@ -68,9 +68,9 @@ intents.message_content = True
 
 client = discord.Client(intents=intents)
 
-# state
+# persistent state
 state = {"message_counter": 0, "current_reminder": 0}
-pending_recruits = {}  # str(uid) -> dict
+pending_recruits = {}  # dict keyed by str(uid)
 
 # -------------------------
 # === UTILITIES ===
@@ -127,9 +127,8 @@ class AdminDecisionView(discord.ui.View):
         self.resolved = False
 
     async def _resolve(self, interaction: discord.Interaction, decision: str):
-        # Only first authorized admin to click triggers resolution
+        # FIX: Only first authorized admin click resolves. Ignore others.
         if self.resolved:
-            # already handled
             try:
                 await interaction.response.send_message("This poll was already resolved.", ephemeral=True)
             except Exception:
@@ -138,7 +137,6 @@ class AdminDecisionView(discord.ui.View):
 
         reactor = interaction.user
         if not is_authorized(reactor):
-            # not a valid admin voter
             try:
                 await interaction.response.send_message("You are not authorized to decide on recruits.", ephemeral=True)
             except Exception:
@@ -152,66 +150,90 @@ class AdminDecisionView(discord.ui.View):
         staff_ch = client.get_channel(CHANNELS["staff_review"])
         guild = interaction.guild
 
-        # fetch member if possible
+        # robust fetch of recruit: try guild.fetch_member first, else client.fetch_user
         recruit_member = None
+        recruit_display = f"ID {uid}"
         try:
-            recruit_member = guild.get_member(int(uid))
+            if guild:
+                try:
+                    recruit_member = await guild.fetch_member(int(uid))
+                except discord.NotFound:
+                    recruit_member = None
+                except Exception:
+                    # fallback to get_member
+                    try:
+                        recruit_member = guild.get_member(int(uid))
+                    except Exception:
+                        recruit_member = None
+            if recruit_member:
+                recruit_display = f"{recruit_member.display_name} (@{recruit_member.name})"
+            else:
+                try:
+                    user_obj = await client.fetch_user(int(uid))
+                    recruit_display = f"{user_obj.name} (@{user_obj.name})"
+                except Exception:
+                    recruit_display = f"ID {uid}"
         except Exception:
-            recruit_member = None
+            recruit_display = f"ID {uid}"
 
         approver_text = approver_label(reactor)
 
+        # Perform action
         if decision == "kick":
-            # Attempt to kick
-            kicked_name = recruit_member.display_name if recruit_member else f"ID {uid}"
             try:
                 if recruit_member:
                     await recruit_member.kick(reason="Rejected by admin vote")
-                    # DM them
+                    # DM recruit if possible
                     try:
                         dm = await recruit_member.create_dm()
                         await dm.send("We are sorry to inform you that your application was rejected. Thank you for your interest in joining Impedance.")
                     except Exception:
                         pass
-                # Post summary embed
                 if staff_ch:
                     embed = discord.Embed(
-                        title=f"🪖 Recruit {kicked_name} kicked out of Impedance",
+                        title=f"🪖 Recruit {recruit_display} kicked out of Impedance",
                         description=f"Recruit was removed due to refusal or inactivity.\n\nApproved by: {approver_text}",
                         color=discord.Color.red()
                     )
                     await staff_ch.send(embed=embed)
+                print(f"📢 Recruit {uid} kicked by {approver_text}")
             except Exception as e:
                 print(f"⚠️ Failed to kick recruit {uid}: {e}")
 
         elif decision == "pardon":
-            pardoned_name = recruit_member.display_name if recruit_member else f"ID {uid}"
-            if staff_ch:
-                embed = discord.Embed(
-                    title=f"🪖 Recruit {pardoned_name} pardoned",
-                    description=f"Recruit was pardoned and will remain in the server.\n\nApproved by: {approver_text}",
-                    color=discord.Color.green()
-                )
-                await staff_ch.send(embed=embed)
+            try:
+                if staff_ch:
+                    embed = discord.Embed(
+                        title=f"🪖 Recruit {recruit_display} pardoned",
+                        description=f"Recruit was pardoned and will remain in the server.\n\nApproved by: {approver_text}",
+                        color=discord.Color.green()
+                    )
+                    await staff_ch.send(embed=embed)
+                print(f"📢 Recruit {uid} pardoned by {approver_text}")
+            except Exception as e:
+                print(f"⚠️ Failed to post pardon for {uid}: {e}")
 
-        # Cleanup pending
+        # Cleanup pending and delete public notice if exists
         if uid in pending_recruits:
             try:
-                # delete any public recruit notice in recruit channel
                 notice_msg_id = pending_recruits[uid].get("notify_msg")
                 if notice_msg_id:
                     try:
                         recruit_ch = client.get_channel(CHANNELS["recruit"])
-                        msg = await recruit_ch.fetch_message(notice_msg_id)
-                        await msg.delete()
+                        if recruit_ch:
+                            m = await recruit_ch.fetch_message(notice_msg_id)
+                            await m.delete()
                     except Exception:
                         pass
             except Exception:
                 pass
-            del pending_recruits[uid]
-            save_json(PENDING_FILE, pending_recruits)
+            try:
+                del pending_recruits[uid]
+                save_json(PENDING_FILE, pending_recruits)
+            except Exception:
+                pass
 
-        # disable buttons to avoid duplicates
+        # disable buttons then delete poll message (we'll attempt both)
         for child in self.children:
             child.disabled = True
         try:
@@ -225,7 +247,7 @@ class AdminDecisionView(discord.ui.View):
         except Exception:
             pass
 
-        # Acknowledge the admin who clicked (ephemeral)
+        # acknowledge actor
         try:
             await interaction.response.send_message(f"Decision recorded: **{decision.upper()}** — approved by {approver_text}", ephemeral=True)
         except Exception:
@@ -233,12 +255,10 @@ class AdminDecisionView(discord.ui.View):
 
     @discord.ui.button(label="Kick recruit", style=discord.ButtonStyle.danger, custom_id="kick_button")
     async def kick_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        # FIX: first-authorized-admin click resolves immediately
         await self._resolve(interaction, "kick")
 
     @discord.ui.button(label="Pardon recruit", style=discord.ButtonStyle.success, custom_id="pardon_button")
     async def pardon_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        # FIX: first-authorized-admin click resolves immediately
         await self._resolve(interaction, "pardon")
 
 # -------------------------
@@ -249,7 +269,12 @@ async def on_ready():
     global state, pending_recruits
     state = load_json(STATE_FILE, state)
     pending_recruits = load_json(PENDING_FILE, pending_recruits)
-    client.loop.create_task(inactivity_checker())
+    # Start inactivity checker exactly once
+    try:
+        client.loop.create_task(inactivity_checker())
+        print("🟢 inactivity_checker task started.")
+    except Exception as e:
+        print(f"⚠️ Failed to start inactivity_checker: {e}")
     print(f"✅ Logged in as {client.user}")
 
 @client.event
@@ -260,13 +285,14 @@ async def on_member_join(member):
         print("⚠️ Recruit channel not found.")
         return
 
-    # Announce new recruit (friendly)
+    # Announce new recruit
     try:
         await recruit_ch.send(f"🎉 Everyone welcome {member.mention} to the server!")
     except Exception:
         pass
 
     # Notify recruit in channel (will be deleted later)
+    notice_id = None
     try:
         notice = await recruit_ch.send(f"🪖 {member.mention}, I have sent you a DM. Please check your DMs.")
         notice_id = notice.id
@@ -284,6 +310,7 @@ async def on_member_join(member):
         "resolved": False
     }
     save_json(PENDING_FILE, pending_recruits)
+    print(f"📨 Started interview for recruit {member.display_name} (uid={uid})")
 
     # DM interview
     try:
@@ -296,7 +323,7 @@ async def on_member_join(member):
                 reply = await client.wait_for(
                     "message",
                     check=lambda m: m.author.id == member.id and isinstance(m.channel, discord.DMChannel),
-                    timeout=600
+                    timeout=600  # 10 minutes per question
                 )
             except asyncio.TimeoutError:
                 # did not answer in time for this question; leave entry and let inactivity checker escalate
@@ -320,13 +347,18 @@ async def on_member_join(member):
             pass
 
         # FIX: delete the public recruit notice now that answers are complete
-        if pending_recruits.get(uid, {}).get("notify_msg"):
-            try:
+        try:
+            notice_msg_id = pending_recruits.get(uid, {}).get("notify_msg")
+            if notice_msg_id:
                 recruit_ch = client.get_channel(CHANNELS["recruit"])
-                msg = await recruit_ch.fetch_message(pending_recruits[uid]["notify_msg"])
-                await msg.delete()
-            except Exception:
-                pass
+                if recruit_ch:
+                    try:
+                        msg = await recruit_ch.fetch_message(notice_msg_id)
+                        await msg.delete()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
         # Send formatted answers to admin review channel (for record)
         admin_ch = client.get_channel(CHANNELS["staff_review"])
@@ -354,6 +386,7 @@ async def on_member_join(member):
         if uid in pending_recruits:
             del pending_recruits[uid]
             save_json(PENDING_FILE, pending_recruits)
+        print(f"✅ Completed interview for recruit {member.display_name} (uid={uid})")
 
     except Exception as e:
         # DM failed or blocked — escalate immediately to admin poll
@@ -377,6 +410,7 @@ async def on_member_join(member):
                 pending_recruits[uid]["under_review"] = True
                 pending_recruits[uid]["review_message_id"] = poll_msg.id
                 save_json(PENDING_FILE, pending_recruits)
+                print(f"📣 Posted immediate admin poll for DM-blocked recruit {display_name} (uid={uid})")
             except Exception as e2:
                 print(f"⚠️ Failed to post admin poll: {e2}")
 
@@ -442,9 +476,16 @@ async def on_presence_update(before, after):
 # -------------------------
 async def inactivity_checker():
     await client.wait_until_ready()
+    print("🔍 inactivity_checker running...")
     while not client.is_closed():
         try:
             now = now_ts()
+            # debug print: how many pending recruits
+            try:
+                print(f"🔍 Checking pending recruits: count={len(pending_recruits)}")
+            except Exception:
+                pass
+
             for uid, entry in list(pending_recruits.items()):
                 # skip resolved or already under review
                 if entry.get("resolved") or entry.get("under_review"):
@@ -452,7 +493,8 @@ async def inactivity_checker():
                 last = entry.get("last_active", entry.get("started_at", now))
                 # if idle >= 10 minutes -> create poll
                 if now - last >= 600:
-                    # FIX: ensure recruit notice is deleted when escalation happens
+                    print(f"🔔 Escalating recruit uid={uid} (idle sec={now-last})")
+                    # delete public recruit notice if exists
                     try:
                         recruit_ch = client.get_channel(CHANNELS["recruit"])
                         if recruit_ch and entry.get("notify_msg"):
@@ -476,8 +518,14 @@ async def inactivity_checker():
                                 display_name = f"{member.display_name} (@{member.name})"
                         except Exception:
                             display_name = None
+
+                    # fallback using fetch_user if not found in guild
                     if display_name is None:
-                        display_name = f"ID {uid}"
+                        try:
+                            user_obj = await client.fetch_user(int(uid))
+                            display_name = f"{user_obj.name} (@{user_obj.name})"
+                        except Exception:
+                            display_name = f"ID {uid}"
 
                     if staff_ch:
                         embed = discord.Embed(
@@ -496,6 +544,7 @@ async def inactivity_checker():
                             entry["under_review"] = True
                             entry["review_message_id"] = poll_msg.id
                             save_json(PENDING_FILE, pending_recruits)
+                            print(f"📣 Posted admin poll for uid={uid}")
                         except Exception as e:
                             print(f"⚠️ Failed to post admin poll for uid {uid}: {e}")
             await asyncio.sleep(30)
