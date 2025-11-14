@@ -7,10 +7,10 @@ import time
 import json
 import asyncio
 from datetime import datetime, timezone
-from keep_alive import app, ping_self   # ✅ FIXED IMPORT
+from keep_alive import app
 
 # ----------------------------------
-# CONFIGURATION (unchanged)
+# CONFIGURATION (leave unchanged)
 # ----------------------------------
 
 CHANNELS = {
@@ -97,20 +97,14 @@ def admin_label(member):
     return member.display_name
 
 # ----------------------------------
-# PERSISTENT BUTTON VIEW
+# BUTTON VIEW (Persistent)
 # ----------------------------------
 
 class AdminDecisionView(discord.ui.View):
     def __init__(self, recruit_id=None):
-        super().__init__(timeout=None)   # persistent
+        super().__init__(timeout=None)
         self.recruit_id = recruit_id
         self.resolved = False
-
-    async def _get_uid(self, msg_id):
-        for uid, info in pending_recruits.items():
-            if info.get("review_message_id") == msg_id:
-                return uid
-        return self.recruit_id
 
     async def resolve(self, interaction, decision):
 
@@ -119,25 +113,23 @@ class AdminDecisionView(discord.ui.View):
         except:
             pass
 
-        msg_id = interaction.message.id
-        uid = await self._get_uid(msg_id)
+        uid = self.recruit_id
         if not uid:
             return
 
-        actor = interaction.user
-        if not is_admin(actor):
+        admin = interaction.user
+        if not is_admin(admin):
             return
 
         self.resolved = True
 
         guild = interaction.guild
         recruit = guild.get_member(int(uid)) if guild else None
-        recruit_name = recruit.display_name if recruit else f"ID {uid}"
-        approver = admin_label(actor)
+        staff_ch = client.get_channel(CHANNELS["staff_review"])
 
         # Disable buttons
-        for c in self.children:
-            c.disabled = True
+        for child in self.children:
+            child.disabled = True
         try:
             await interaction.message.edit(view=self)
         except:
@@ -149,35 +141,37 @@ class AdminDecisionView(discord.ui.View):
         except:
             pass
 
-        staff_ch = client.get_channel(CHANNELS["staff_review"])
+        approver = admin_label(admin)
+        name = recruit.display_name if recruit else f"ID {uid}"
 
         if decision == "kick":
-            try:
-                if recruit:
-                    await recruit.kick(reason="Rejected by admin decision")
+            if recruit:
+                try:
+                    await recruit.kick(reason="Rejected by admin vote")
                     try:
                         dm = await recruit.create_dm()
-                        await dm.send("Your application was rejected. Thank you for applying.")
+                        await dm.send("Your application to Impedance has been rejected.")
                     except:
                         pass
-            except:
-                pass
+                except:
+                    pass
 
             embed = discord.Embed(
-                title=f"🪖 Recruit {recruit_name} kicked out of Impedance",
+                title=f"🪖 Recruit {name} kicked out of Impedance",
                 description=f"Approved by: {approver}",
                 color=discord.Color.red()
             )
             await staff_ch.send(embed=embed)
 
-        else:  # pardon
+        else:
             embed = discord.Embed(
-                title=f"🪖 Recruit {recruit_name} pardoned",
+                title=f"🪖 Recruit {name} pardoned",
                 description=f"Approved by: {approver}",
                 color=discord.Color.green()
             )
             await staff_ch.send(embed=embed)
 
+        # ✔ FIX: DELETE ONLY AFTER KICK/PARDON  
         if uid in pending_recruits:
             del pending_recruits[uid]
             save_json(PENDING_FILE, pending_recruits)
@@ -200,8 +194,10 @@ async def on_ready():
     state = load_json(STATE_FILE, state)
     pending_recruits = load_json(PENDING_FILE, pending_recruits)
 
-    # Register persistent buttons
-    client.add_view(AdminDecisionView())
+    try:
+        client.add_view(AdminDecisionView())
+    except:
+        pass
 
     client.loop.create_task(inactivity_checker())
     print(f"✅ Logged in as {client.user}")
@@ -212,21 +208,19 @@ async def on_member_join(member):
     staff_ch = client.get_channel(CHANNELS["staff_review"])
 
     await recruit_ch.send(f"🎉 Everyone welcome {member.mention} to Impedance!")
-
     notice = await recruit_ch.send(f"🪖 {member.mention}, I have sent you a DM. Please check your DMs.")
-    uid = str(member.id)
 
+    uid = str(member.id)
     pending_recruits[uid] = {
         "started": now_ts(),
         "last": now_ts(),
         "answers": [],
         "announce": notice.id,
-        "under_review": False,
-        "review_message_id": None
+        "under_review": False
     }
     save_json(PENDING_FILE, pending_recruits)
 
-    # Try to DM questions
+    # DM QUESTIONS
     try:
         dm = await member.create_dm()
         await dm.send("🪖 Welcome to Impedance! Please answer the approval questions:")
@@ -242,15 +236,15 @@ async def on_member_join(member):
             pending_recruits[uid]["last"] = now_ts()
             save_json(PENDING_FILE, pending_recruits)
 
-        await dm.send("✅ Thank you! Your answers will be reviewed.")
+        await dm.send("✅ Thank you! Your answers will be reviewed by admins.")
 
+        # DELETE ONLY THE NOTICE — NOT THE PENDING ENTRY
         try:
-            msg = await recruit_ch.fetch_message(notice.id)
-            await msg.delete()
+            m = await recruit_ch.fetch_message(notice.id)
+            await m.delete()
         except:
             pass
 
-        # Post results to admin review
         labels = [
             "Purpose of joining:",
             "Invited by:",
@@ -270,30 +264,26 @@ async def on_member_join(member):
         )
         await staff_ch.send(embed=embed)
 
-        del pending_recruits[uid]
-        save_json(PENDING_FILE, pending_recruits)
+        # ✔ FIX: DO NOT DELETE pending_recruits HERE  
+        # Admin must kick/pardon manually
 
     except:
-        # DM failed → create poll
+        view = AdminDecisionView(uid)
         embed = discord.Embed(
-            title=f"🪖 Recruit {member.display_name} (@{member.name}) cannot be DMed",
+            title=f"🪖 Recruit {member.display_name} cannot be DMed",
             description="Should this recruit be kicked?\n(Admin vote required)",
             color=discord.Color.dark_gold()
         )
-        view = AdminDecisionView(recruit_id=uid)
-        msg = await staff_ch.send(embed=embed, view=view)
-        pending_recruits[uid]["under_review"] = True
-        pending_recruits[uid]["review_message_id"] = msg.id
-        save_json(PENDING_FILE, pending_recruits)
+        await staff_ch.send(embed=embed, view=view)
 
-# ----------------------------------
-# REMINDERS
-# ----------------------------------
+        pending_recruits[uid]["under_review"] = True
+        save_json(PENDING_FILE, pending_recruits)
 
 @client.event
 async def on_message(message):
     if message.author.id == client.user.id:
         return
+
     if message.channel.id == CHANNELS["reminder"]:
         state["message_counter"] += 1
         save_json(STATE_FILE, state)
@@ -306,41 +296,13 @@ async def on_message(message):
                 color=discord.Color.orange()
             )
             await message.channel.send(embed=embed)
-            state["current_reminder"] = (state["current_reminder"] + 1) % len(REMINDERS)
+
+            state["current_reminder"] = (state["current_reminder"] + 1) % len(RE
             state["message_counter"] = 0
             save_json(STATE_FILE, state)
 
 # ----------------------------------
-# PRESENCE ANNOUNCEMENTS
-# ----------------------------------
-
-@client.event
-async def on_presence_update(before, after):
-    try:
-        if before.status != after.status and str(after.status) in ["online", "idle", "dnd"]:
-            m = after
-            ids = [r.id for r in m.roles]
-            ch = client.get_channel(CHANNELS["main"])
-
-            if ROLES["queen"] in ids:
-                title, color = f"👑 Queen {m.display_name} just came online!", discord.Color.gold()
-            elif ROLES["clan_master"] in ids:
-                title, color = f"🌟 Clan Master {m.display_name} just came online!", discord.Color.blue()
-            elif ROLES["og_impedance"] in ids:
-                title, color = f"🎉 OG {m.display_name} online!", discord.Color.red()
-            elif ROLES["impedance"] in ids:
-                title, color = f"⭐ Member {m.display_name} just came online!", discord.Color.purple()
-            else:
-                return
-
-            embed = discord.Embed(title=title, color=color)
-            embed.set_thumbnail(url=after.display_avatar.url)
-            await ch.send(embed=embed)
-    except:
-        pass
-
-# ----------------------------------
-# INACTIVITY CHECKER
+# INACTIVITY CHECKER (10 minutes)
 # ----------------------------------
 
 async def inactivity_checker():
@@ -348,20 +310,22 @@ async def inactivity_checker():
     while not client.is_closed():
         now = now_ts()
         for uid, data in list(pending_recruits.items()):
+
             if data.get("under_review"):
                 continue
 
             last = data.get("last", data["started"])
-            if now - last >= 600:
-                recruit_ch = client.get_channel(CHANNELS["recruit"])
-                staff_ch = client.get_channel(CHANNELS["staff_review"])
 
+            if now - last >= 600:
+
+                recruit_ch = client.get_channel(CHANNELS["recruit"])
                 try:
                     msg = await recruit_ch.fetch_message(data["announce"])
                     await msg.delete()
                 except:
                     pass
 
+                staff_ch = client.get_channel(CHANNELS["staff_review"])
                 guild = staff_ch.guild
                 member = guild.get_member(int(uid))
                 name = member.display_name if member else f"ID {uid}"
@@ -372,10 +336,10 @@ async def inactivity_checker():
                     color=discord.Color.dark_gold()
                 )
 
-                view = AdminDecisionView(recruit_id=uid)
-                poll_msg = await staff_ch.send(embed=embed, view=view)
+                view = AdminDecisionView(uid)
+                await staff_ch.send(embed=embed, view=view)
+
                 pending_recruits[uid]["under_review"] = True
-                pending_recruits[uid]["review_message_id"] = poll_msg.id
                 save_json(PENDING_FILE, pending_recruits)
 
         await asyncio.sleep(20)
@@ -392,8 +356,9 @@ def run_bot():
 threading.Thread(target=run_bot, daemon=True).start()
 
 if __name__ == "__main__":
-    # start self-pinger (fixed)
-    threading.Thread(target=ping_self, daemon=True).start()
-
-    # run Flask server
+    try:
+        from keep_alive import ping_self
+        threading.Thread(target=ping_self, daemon=True).start()
+    except:
+        pass
     app.run(host="0.0.0.0", port=8080)
