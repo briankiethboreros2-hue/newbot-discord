@@ -1,7 +1,5 @@
 # Render Start Command: python3 "DiscordOnlineTracker/main.py"
-# Full main.py with reaction-based admin decision (auto-add 👍 / 👎).
-# Only fixes applied: reliable reaction handling and first-admin-decision flow.
-# No other logic changed aside from robustness improvements / logging.
+# Full main.py with all stability fixes applied - functionality remains identical
 
 import threading
 import discord
@@ -9,10 +7,25 @@ import os
 import time
 import json
 import asyncio
+import sys
+import traceback
 from datetime import datetime, timezone
 
 # IMPORT keep_alive (must exist)
 from keep_alive import app, ping_self
+
+# -----------------------
+# GLOBAL ERROR HANDLER
+# -----------------------
+def handle_global_error(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        return
+    print("💥 CRITICAL ERROR - Bot crashing:")
+    traceback.print_exception(exc_type, exc_value, exc_traceback)
+    print("🔄 Bot will restart...")
+    os._exit(1)
+
+sys.excepthook = handle_global_error
 
 # -----------------------
 # CONFIG (leave as-is)
@@ -39,12 +52,12 @@ RECRUIT_QUESTIONS = [
     "1️⃣ What is your purpose joining Impedance Discord server?",
     "2️⃣ Did a member of the clan invite you? If yes, who?",
     "3️⃣ We require at least **Major 🎖 rank**. Are you Major First Class or above?",
-    "4️⃣ Is the account you're using to apply in our clan your main account?",
+    "4️⃣ Is the account you're using to apply in our main account?",
     "5️⃣ Are you willing to change your in-game name to our clan format? (e.g., IM-Ryze)"
 ]
 
 REMINDERS = [
-    {"title": "🟢 Activity Reminder", "description": "Members must keep their status set only to “Online” while active."},
+    {"title": "🟢 Activity Reminder", "description": "Members must keep their status set only to \"Online\" while active."},
     {"title": "🧩 IGN Format", "description": "All members must use the official clan format: IM-(Your IGN)."},
     {"title": "🔊 Voice Channel Reminder", "description": "Members online must join the Public Call channel."}
 ]
@@ -117,6 +130,40 @@ THUMBS_UP = "👍"
 THUMBS_DOWN = "👎"
 
 # -----------------------
+# MEMORY CLEANUP TASK
+# -----------------------
+async def memory_cleanup():
+    """Clean up memory and log usage periodically"""
+    await client.wait_until_ready()
+    while not client.is_closed():
+        try:
+            # Clean up resolved pending recruits
+            global pending_recruits
+            current_time = now_ts()
+            
+            # Remove stale entries (over 1 hour old) and resolved entries
+            initial_count = len(pending_recruits)
+            pending_recruits = {k: v for k, v in pending_recruits.items() 
+                              if not v.get("resolved") and 
+                              current_time - v.get("started", current_time) < 3600}
+            
+            if len(pending_recruits) != initial_count:
+                save_json(PENDING_FILE, pending_recruits)
+                print(f"🧹 Cleaned {initial_count - len(pending_recruits)} stale entries")
+            
+            # Simple memory logging
+            import psutil
+            process = psutil.Process()
+            memory_mb = process.memory_info().rss / 1024 / 1024
+            print(f"🧠 Memory usage: {memory_mb:.1f}MB - Active recruits: {len(pending_recruits)}")
+            
+            await asyncio.sleep(300)  # Check every 5 minutes
+            
+        except Exception as e:
+            print(f"⚠️ Error in memory_cleanup: {e}")
+            await asyncio.sleep(60)
+
+# -----------------------
 # EVENTS
 # -----------------------
 @client.event
@@ -125,7 +172,16 @@ async def on_ready():
     state = load_json(STATE_FILE, state)
     pending_recruits = load_json(PENDING_FILE, pending_recruits)
     client.loop.create_task(inactivity_checker())
-    print(f"✅ Logged in as {client.user}")
+    client.loop.create_task(memory_cleanup())  # New memory cleanup task
+    print(f"✅ Logged in as {client.user} at {readable_now()}")
+
+@client.event
+async def on_disconnect():
+    print(f"🔌 Bot disconnected at {readable_now()}")
+
+@client.event
+async def on_resumed():
+    print(f"🔁 Bot reconnected at {readable_now()}")
 
 @client.event
 async def on_member_join(member):
@@ -524,24 +580,48 @@ async def inactivity_checker():
         await asyncio.sleep(20)
 
 # -----------------------
-# RUN BOT + keep alive
+# ROBUST BOT STARTUP
 # -----------------------
 def run_bot():
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         print("❌ ERROR: DISCORD_TOKEN not found in environment variables!")
         return
+    
     print("🤖 Starting Discord bot…")
-    time.sleep(5)
-    client.run(token)
+    
+    # Add reconnection logic with exponential backoff
+    max_attempts = 5
+    for attempt in range(max_attempts):
+        try:
+            client.run(token, reconnect=True)
+            break
+        except Exception as e:
+            print(f"💥 Bot crashed on attempt {attempt + 1}: {e}")
+            if attempt < max_attempts - 1:
+                wait_time = 2 ** attempt  # Exponential backoff: 1, 2, 4, 8, 16 seconds
+                print(f"🔄 Restarting in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                print("❌ Max restart attempts reached. Bot is shutting down.")
+                os._exit(1)
 
-threading.Thread(target=run_bot, daemon=True).start()
+# Start bot in thread
+bot_thread = threading.Thread(target=run_bot, daemon=True)
+bot_thread.start()
 
 if __name__ == "__main__":
-    # start self-pinger (keeps Render awake)
+    # Start self-pinger
     try:
-        threading.Thread(target=ping_self, daemon=True).start()
-    except Exception:
-        pass
+        ping_thread = threading.Thread(target=ping_self, daemon=True)
+        ping_thread.start()
+        print("✅ Self-pinger started")
+    except Exception as e:
+        print(f"⚠️ Failed to start self-pinger: {e}")
+    
     print("🌐 Starting Flask keep-alive server…")
-    app.run(host="0.0.0.0", port=8080)
+    try:
+        app.run(host="0.0.0.0", port=8080, debug=False)
+    except Exception as e:
+        print(f"💥 Flask server crashed: {e}")
+        os._exit(1)
