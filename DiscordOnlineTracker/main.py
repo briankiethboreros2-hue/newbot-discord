@@ -191,7 +191,7 @@ async def on_member_join(member):
         }
         save_json(PENDING_FILE, pending_recruits)
 
-        # ENHANCED DM FLOW
+        # NEW ENHANCED DM FLOW - NO DUPLICATES
         try:
             dm = await member.create_dm()
             await dm.send("🪖 Welcome to Impedance! Please answer the verification questions one by one:")
@@ -222,6 +222,15 @@ async def on_member_join(member):
                     check=lambda m: m.author.id == member.id and m.channel.id == dm.id
                 )
                 additional_info["former_reason"] = reason_msg.content
+                
+                # Post to admin channel for former member info
+                if staff_ch:
+                    embed = discord.Embed(
+                        title="🪖 Former Member Info",
+                        description=f"**{member.display_name}** (`{member.name}`) claimed to be a former member of the clan.\n\nThe user stated that: {additional_info['former_reason']}",
+                        color=0xffa500
+                    )
+                    await staff_ch.send(embed=embed)
 
             # Question 2: Current member check  
             await dm.send("**Are you currently a member of Impedance?** (yes/no)")
@@ -256,14 +265,11 @@ async def on_member_join(member):
                 if staff_ch:
                     embed = discord.Embed(
                         title="🪖 Member Access Request",
-                        description=f"**{member.display_name}** (`{member.name}`) claims to be a current member and requests full server access.",
+                        description=f"**{member.display_name}** stated that he/she is a member and would like to gain full access in this server as a member.",
                         color=0x00ff00
                     )
                     embed.add_field(name="In-Game Name", value=additional_info["ign"], inline=False)
                     embed.add_field(name="Status", value="Awaiting verification", inline=True)
-                    
-                    if additional_info["is_former_member"]:
-                        embed.add_field(name="Former Member Info", value=f"**Reason for leaving:** {additional_info['former_reason']}", inline=False)
                     
                     verification_msg = await staff_ch.send(embed=embed)
                     await verification_msg.add_reaction("👍")
@@ -340,10 +346,6 @@ async def on_member_join(member):
                         label = labels[i] if i < len(labels) else f"Question {i+1}:"
                         formatted += f"**{label}**\n{ans}\n\n"
                     
-                    # Add former member info if applicable
-                    if additional_info["is_former_member"]:
-                        formatted += f"**Former Member Reason:**\n{additional_info['former_reason']}\n\n"
-                    
                     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
                     embed = discord.Embed(
                         title=f"🪖 Recruit {member.display_name} for approval.",
@@ -397,8 +399,6 @@ async def on_member_join(member):
                 
     except Exception as e:
         log_error("ON_MEMBER_JOIN", e)
-
-# ... REST OF THE CODE REMAINS EXACTLY THE SAME ...
 
 @client.event
 async def on_message(message):
@@ -545,11 +545,9 @@ async def on_raw_reaction_add(payload):
                         if staff_ch:
                             embed = discord.Embed(
                                 title="✅ Member Access Approved",
-                                description=f"**{recruit_member.display_name}** has been granted the {ROLES['impedance_star']} role.",
+                                description=f"**{recruit_member.display_name}** added to the Impedance⭐ approved by {approver_text}",
                                 color=0x00ff00
                             )
-                            embed.add_field(name="Approved by", value=approver_text, inline=True)
-                            embed.add_field(name="IGN", value=additional_info.get("ign", "Not provided"), inline=True)
                             await staff_ch.send(embed=embed)
                             
                         # Notify user
@@ -571,11 +569,9 @@ async def on_raw_reaction_add(payload):
                 if staff_ch:
                     denial_embed = discord.Embed(
                         title="❌ Member Access Denied",
-                        description=f"**{recruit_member.display_name if recruit_member else 'Unknown'}** claimed to be an Impedance member but was denied access.",
+                        description=f"**{recruit_member.display_name if recruit_member else 'Unknown'}** claimed to be an Impedance member and requesting full access to this server as a member, but denied by {approver_text}",
                         color=0xff0000
                     )
-                    denial_embed.add_field(name="Denied by", value=approver_text, inline=True)
-                    denial_embed.add_field(name="IGN Provided", value=additional_info.get("ign", "Not provided"), inline=True)
                     await staff_ch.send(embed=denial_embed)
                     
                     # Notify user
