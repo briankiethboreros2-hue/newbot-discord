@@ -134,7 +134,7 @@ async def on_resumed():
 async def on_member_join(member):
     try:
         print(f"👤 [{datetime.now().strftime('%H:%M:%S')}] Member joined: {member.display_name}")
-        # [YOUR ORIGINAL on_member_join CODE HERE - COPY IT EXACTLY]
+        
         recruit_ch = client.get_channel(CHANNELS["recruit"])
         staff_ch = client.get_channel(CHANNELS["staff_review"])
 
@@ -162,15 +162,106 @@ async def on_member_join(member):
             "announce": notice_id,
             "under_review": False,
             "review_message_id": None,
-            "resolved": False
+            "resolved": False,
+            "additional_info": {}
         }
         save_json(PENDING_FILE, pending_recruits)
 
-        # DM flow
+        # ENHANCED DM FLOW - NO DUPLICATE MESSAGES
         try:
             dm = await member.create_dm()
-            await dm.send("🪖 Welcome to Impedance! Please answer the approval questions one by one:")
+            await dm.send("🪖 Welcome to Impedance! Please answer the verification questions one by one:")
+            
+            additional_info = {
+                "is_former_member": False,
+                "former_reason": None,
+                "is_current_member": False,
+                "ign": None
+            }
+            
+            # Question 1: Former member check
+            await dm.send("**Are you a former member of our clan?** (yes/no)")
+            former_member_msg = await client.wait_for(
+                "message",
+                timeout=300.0,
+                check=lambda m: m.author.id == member.id and isinstance(m.channel, discord.DMChannel)
+            )
+            former_member_response = former_member_msg.content.lower()
+            
+            # If former member, ask reason
+            if former_member_response in ['yes', 'y']:
+                additional_info["is_former_member"] = True
+                await dm.send("**What was the reason for leaving the clan previously?**")
+                reason_msg = await client.wait_for(
+                    "message",
+                    timeout=300.0,
+                    check=lambda m: m.author.id == member.id and isinstance(m.channel, discord.DMChannel)
+                )
+                additional_info["former_reason"] = reason_msg.content
+                pending_recruits[uid]["additional_info"] = additional_info
+                pending_recruits[uid]["last"] = int(time.time())
+                save_json(PENDING_FILE, pending_recruits)
 
+            # Question 2: Current member check  
+            await dm.send("**Are you currently a member of Impedance?** (yes/no)")
+            current_member_msg = await client.wait_for(
+                "message",
+                timeout=300.0,
+                check=lambda m: m.author.id == member.id and isinstance(m.channel, discord.DMChannel)
+            )
+            current_member_response = current_member_msg.content.lower()
+            
+            # If current member, ask for IGN and start verification process
+            if current_member_response in ['yes', 'y']:
+                additional_info["is_current_member"] = True
+                await dm.send("**Please provide your in-game name (IGN) for verification:**")
+                ign_msg = await client.wait_for(
+                    "message",
+                    timeout=300.0,
+                    check=lambda m: m.author.id == member.id and isinstance(m.channel, discord.DMChannel)
+                )
+                additional_info["ign"] = ign_msg.content
+                
+                pending_recruits[uid]["additional_info"] = additional_info
+                pending_recruits[uid]["last"] = int(time.time())
+                save_json(PENDING_FILE, pending_recruits)
+                
+                # Post to admin channel for member verification
+                if staff_ch:
+                    embed = discord.Embed(
+                        title="🪖 Member Access Request",
+                        description=f"**{member.display_name}** (`{member.name}`) claims to be a current member and requests full server access.",
+                        color=0x00ff00
+                    )
+                    embed.add_field(name="In-Game Name", value=additional_info["ign"], inline=False)
+                    embed.add_field(name="Status", value="Awaiting verification", inline=True)
+                    
+                    if additional_info["is_former_member"]:
+                        embed.add_field(name="Former Member Info", value=f"**Reason for leaving:** {additional_info['former_reason']}", inline=False)
+                    
+                    verification_msg = await staff_ch.send(embed=embed)
+                    await verification_msg.add_reaction("👍")
+                    await verification_msg.add_reaction("👎")
+                    
+                    pending_recruits[uid]["under_review"] = True
+                    pending_recruits[uid]["review_message_id"] = verification_msg.id
+                    save_json(PENDING_FILE, pending_recruits)
+                    
+                    await dm.send("✅ Your membership verification has been sent to admins. Please wait for approval.")
+                    
+                # Skip remaining questions for current members
+                # Delete announce message
+                try:
+                    if notice_id and recruit_ch:
+                        msg = await recruit_ch.fetch_message(notice_id)
+                        await msg.delete()
+                except Exception:
+                    pass
+                return
+
+            # If NOT a current member, proceed with original 5 questions
+            await dm.send("**Now proceeding with regular recruitment questions:**")
+            
             for q in RECRUIT_QUESTIONS:
                 await dm.send(q)
                 try:
@@ -193,7 +284,7 @@ async def on_member_join(member):
                 pending_recruits[uid]["last"] = int(time.time())
                 save_json(PENDING_FILE, pending_recruits)
 
-            # Completed
+            # Completed regular questions
             try:
                 await dm.send("✅ Thank you! Your answers will be reviewed by the admins. Please wait for further instructions.")
             except Exception:
@@ -222,6 +313,11 @@ async def on_member_join(member):
                     for i, ans in enumerate(answers):
                         label = labels[i] if i < len(labels) else f"Question {i+1}:"
                         formatted += f"**{label}**\n{ans}\n\n"
+                    
+                    # Add former member info if applicable
+                    if additional_info["is_former_member"]:
+                        formatted += f"**Former Member Reason:**\n{additional_info['former_reason']}\n\n"
+                    
                     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
                     embed = discord.Embed(
                         title=f"🪖 Recruit {member.display_name} for approval.",
@@ -373,8 +469,10 @@ async def on_raw_reaction_add(payload):
         entry["resolved"] = True
         save_json(PENDING_FILE, pending_recruits)
 
-        action = "kick" if emoji_name == "👍" else "pardon"
-        
+        # Check if this is a member verification request
+        additional_info = entry.get("additional_info", {})
+        is_member_verification = additional_info.get("is_current_member", False)
+
         def admin_label(member):
             if not member:
                 return "Unknown"
@@ -406,10 +504,7 @@ async def on_raw_reaction_add(payload):
         except Exception:
             pass
 
-        # Check if this is a member verification request
-        additional_info = entry.get("additional_info", {})
-        is_member_verification = additional_info.get("is_current_member", False)
-
+        # Handle member verification requests (current members)
         if is_member_verification:
             if emoji_name == "👍":  # APPROVE member
                 try:
@@ -464,7 +559,7 @@ async def on_raw_reaction_add(payload):
                         
         else:
             # Original kick/pardon logic for regular recruits
-            if action == "kick":
+            if emoji_name == "👍":  # KICK regular recruit
                 kicked_display = recruit_member.display_name if recruit_member else f"ID {uid}"
                 try:
                     if recruit_member:
@@ -488,7 +583,7 @@ async def on_raw_reaction_add(payload):
                     except Exception:
                         pass
 
-            else:
+            else:  # PARDON regular recruit
                 pardoned_display = recruit_member.display_name if recruit_member else f"ID {uid}"
                 if staff_ch:
                     embed = discord.Embed(
