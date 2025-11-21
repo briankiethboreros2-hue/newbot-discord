@@ -80,6 +80,8 @@ client = discord.Client(intents=intents)
 # -----------------------
 state = {"message_counter": 0, "current_reminder": 0}
 pending_recruits = {}
+# Add a cooldown system to prevent duplicate member join events
+recent_joins = {}
 
 # -----------------------
 # LOAD/SAVE
@@ -133,17 +135,38 @@ async def on_resumed():
 @client.event
 async def on_member_join(member):
     try:
+        # COOLDOWN CHECK - Prevent duplicate events
+        current_time = time.time()
+        member_id = str(member.id)
+        
+        if member_id in recent_joins:
+            # If member joined less than 30 seconds ago, ignore this event
+            if current_time - recent_joins[member_id] < 30:
+                print(f"⏰ [{datetime.now().strftime('%H:%M:%S')}] Ignoring duplicate join event for {member.display_name}")
+                return
+        
+        # Update cooldown
+        recent_joins[member_id] = current_time
+        
         print(f"👤 [{datetime.now().strftime('%H:%M:%S')}] Member joined: {member.display_name}")
         
         recruit_ch = client.get_channel(CHANNELS["recruit"])
         staff_ch = client.get_channel(CHANNELS["staff_review"])
 
+        # Check if this user is already being processed
+        uid = str(member.id)
+        if uid in pending_recruits and pending_recruits[uid].get("started", 0) > current_time - 300:  # 5 minutes
+            print(f"🔄 [{datetime.now().strftime('%H:%M:%S')}] Member {member.display_name} already in pending, skipping")
+            return
+
         # welcome (best-effort) - ONLY ONCE
+        welcome_sent = False
         try:
             if recruit_ch:
                 await recruit_ch.send(f"🎉 Everyone welcome {member.mention} to Impedance!")
-        except Exception:
-            pass
+                welcome_sent = True
+        except Exception as e:
+            print(f"⚠️ Failed to send welcome: {e}")
 
         # public notice to be deleted later - ONLY ONCE
         notice_id = None
@@ -151,25 +174,24 @@ async def on_member_join(member):
             if recruit_ch:
                 notice = await recruit_ch.send(f"🪖 {member.mention}, I have sent you a DM. Please check your DMs.")
                 notice_id = notice.id
-        except Exception:
-            notice_id = None
+        except Exception as e:
+            print(f"⚠️ Failed to send notice: {e}")
 
-        uid = str(member.id)
-        # Check if this user is already in pending_recruits to avoid duplicates
-        if uid not in pending_recruits:
-            pending_recruits[uid] = {
-                "started": int(time.time()),
-                "last": int(time.time()),
-                "answers": [],
-                "announce": notice_id,
-                "under_review": False,
-                "review_message_id": None,
-                "resolved": False,
-                "additional_info": {}
-            }
-            save_json(PENDING_FILE, pending_recruits)
+        # Initialize pending recruit
+        pending_recruits[uid] = {
+            "started": int(current_time),
+            "last": int(current_time),
+            "answers": [],
+            "announce": notice_id,
+            "under_review": False,
+            "review_message_id": None,
+            "resolved": False,
+            "additional_info": {},
+            "welcome_sent": welcome_sent
+        }
+        save_json(PENDING_FILE, pending_recruits)
 
-        # ENHANCED DM FLOW - WITH BETTER ERROR HANDLING
+        # ENHANCED DM FLOW
         try:
             dm = await member.create_dm()
             await dm.send("🪖 Welcome to Impedance! Please answer the verification questions one by one:")
@@ -375,6 +397,8 @@ async def on_member_join(member):
                 
     except Exception as e:
         log_error("ON_MEMBER_JOIN", e)
+
+# ... REST OF THE CODE REMAINS EXACTLY THE SAME ...
 
 @client.event
 async def on_message(message):
