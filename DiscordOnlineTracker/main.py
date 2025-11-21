@@ -138,14 +138,14 @@ async def on_member_join(member):
         recruit_ch = client.get_channel(CHANNELS["recruit"])
         staff_ch = client.get_channel(CHANNELS["staff_review"])
 
-        # welcome (best-effort)
+        # welcome (best-effort) - ONLY ONCE
         try:
             if recruit_ch:
                 await recruit_ch.send(f"🎉 Everyone welcome {member.mention} to Impedance!")
         except Exception:
             pass
 
-        # public notice to be deleted later
+        # public notice to be deleted later - ONLY ONCE
         notice_id = None
         try:
             if recruit_ch:
@@ -155,19 +155,21 @@ async def on_member_join(member):
             notice_id = None
 
         uid = str(member.id)
-        pending_recruits[uid] = {
-            "started": int(time.time()),
-            "last": int(time.time()),
-            "answers": [],
-            "announce": notice_id,
-            "under_review": False,
-            "review_message_id": None,
-            "resolved": False,
-            "additional_info": {}
-        }
-        save_json(PENDING_FILE, pending_recruits)
+        # Check if this user is already in pending_recruits to avoid duplicates
+        if uid not in pending_recruits:
+            pending_recruits[uid] = {
+                "started": int(time.time()),
+                "last": int(time.time()),
+                "answers": [],
+                "announce": notice_id,
+                "under_review": False,
+                "review_message_id": None,
+                "resolved": False,
+                "additional_info": {}
+            }
+            save_json(PENDING_FILE, pending_recruits)
 
-        # ENHANCED DM FLOW - NO DUPLICATE MESSAGES
+        # ENHANCED DM FLOW - WITH BETTER ERROR HANDLING
         try:
             dm = await member.create_dm()
             await dm.send("🪖 Welcome to Impedance! Please answer the verification questions one by one:")
@@ -184,7 +186,7 @@ async def on_member_join(member):
             former_member_msg = await client.wait_for(
                 "message",
                 timeout=300.0,
-                check=lambda m: m.author.id == member.id and isinstance(m.channel, discord.DMChannel)
+                check=lambda m: m.author.id == member.id and m.channel.id == dm.id
             )
             former_member_response = former_member_msg.content.lower()
             
@@ -195,21 +197,23 @@ async def on_member_join(member):
                 reason_msg = await client.wait_for(
                     "message",
                     timeout=300.0,
-                    check=lambda m: m.author.id == member.id and isinstance(m.channel, discord.DMChannel)
+                    check=lambda m: m.author.id == member.id and m.channel.id == dm.id
                 )
                 additional_info["former_reason"] = reason_msg.content
-                pending_recruits[uid]["additional_info"] = additional_info
-                pending_recruits[uid]["last"] = int(time.time())
-                save_json(PENDING_FILE, pending_recruits)
 
             # Question 2: Current member check  
             await dm.send("**Are you currently a member of Impedance?** (yes/no)")
             current_member_msg = await client.wait_for(
                 "message",
                 timeout=300.0,
-                check=lambda m: m.author.id == member.id and isinstance(m.channel, discord.DMChannel)
+                check=lambda m: m.author.id == member.id and m.channel.id == dm.id
             )
             current_member_response = current_member_msg.content.lower()
+            
+            # Update pending_recruits with additional info
+            pending_recruits[uid]["additional_info"] = additional_info
+            pending_recruits[uid]["last"] = int(time.time())
+            save_json(PENDING_FILE, pending_recruits)
             
             # If current member, ask for IGN and start verification process
             if current_member_response in ['yes', 'y']:
@@ -218,7 +222,7 @@ async def on_member_join(member):
                 ign_msg = await client.wait_for(
                     "message",
                     timeout=300.0,
-                    check=lambda m: m.author.id == member.id and isinstance(m.channel, discord.DMChannel)
+                    check=lambda m: m.author.id == member.id and m.channel.id == dm.id
                 )
                 additional_info["ign"] = ign_msg.content
                 
@@ -267,8 +271,8 @@ async def on_member_join(member):
                 try:
                     reply = await client.wait_for(
                         "message",
-                        check=lambda m: m.author.id == member.id and isinstance(m.channel, discord.DMChannel),
-                        timeout=600
+                        timeout=600,
+                        check=lambda m: m.author.id == member.id and m.channel.id == dm.id
                     )
                 except asyncio.TimeoutError:
                     pending_recruits[uid]["last"] = int(time.time())
@@ -330,14 +334,15 @@ async def on_member_join(member):
 
             # resolved (remove pending)
             try:
-                del pending_recruits[uid]
-                save_json(PENDING_FILE, pending_recruits)
+                if uid in pending_recruits:
+                    del pending_recruits[uid]
+                    save_json(PENDING_FILE, pending_recruits)
             except Exception:
                 pass
 
         except Exception as e:
             # DM failed (blocked) - create admin review message and add reactions
-            print(f"⚠️ Could not DM {member.display_name}: {e}")
+            print(f"⚠️ Could not complete DM flow for {member.display_name}: {e}")
             try:
                 if staff_ch:
                     display_name = f"{member.display_name} (@{member.name})"
