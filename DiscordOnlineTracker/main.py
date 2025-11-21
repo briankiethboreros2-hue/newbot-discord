@@ -43,20 +43,19 @@ ROLES = {
     "clan_master": 1389835747040694332,
     "og_impedance": 1437572916005834793,
     "impedance": 1437570031822176408,
-    "impedance_star": "Impedance⭐"  # Added for the new role
+    "impedance_star": "Impedance⭐"
 }
 
 REMINDER_THRESHOLD = 50
 STATE_FILE = "reminder_state.json"
 PENDING_FILE = "pending_recruits.json"
 
-# Updated questions with new verification flow
 RECRUIT_QUESTIONS = [
-    "What is your purpose joining Impedance Discord server?",
-    "Did a member of the clan invite you? If yes, who?",
-    "We require at least **Major 🎖 rank**. Are you Major First Class or above?",
-    "Is the account you're using to apply in our main account?",
-    "Are you willing to change your in-game name to our clan format? (e.g., IM-Ryze)"
+    "1️⃣ What is your purpose joining Impedance Discord server?",
+    "2️⃣ Did a member of the clan invite you? If yes, who?",
+    "3️⃣ We require at least **Major 🎖 rank**. Are you Major First Class or above?",
+    "4️⃣ Is the account you're using to apply in our main account?",
+    "5️⃣ Are you willing to change your in-game name to our clan format? (e.g., IM-Ryze)"
 ]
 
 REMINDERS = [
@@ -100,162 +99,6 @@ def save_json(path, data):
         print(f"⚠️ Save failed: {e}")
 
 # -----------------------
-# NEW DM RECRUITMENT FLOW
-# -----------------------
-async def dm_recruitment_flow(member):
-    try:
-        uid = str(member.id)
-        dm = await member.create_dm()
-        
-        await dm.send("🪖 Welcome to Impedance! Please answer the verification questions one by one:")
-        
-        # Track additional info for former/current members
-        additional_info = {
-            "is_former_member": False,
-            "former_reason": None,
-            "is_current_member": False,
-            "ign": None,
-            "member_verification_msg_id": None
-        }
-        
-        # Question 1: Former member check
-        try:
-            await dm.send("**Are you a former member of our clan?** (yes/no)")
-            former_member_msg = await client.wait_for(
-                'message',
-                timeout=300.0,
-                check=lambda m: m.author == member and m.channel == dm and m.content.lower() in ['yes', 'no', 'y', 'n']
-            )
-            former_member_response = former_member_msg.content.lower()
-            
-            # If former member, ask reason
-            if former_member_response in ['yes', 'y']:
-                additional_info["is_former_member"] = True
-                await dm.send("**What was the reason for leaving the clan previously?**")
-                reason_msg = await client.wait_for(
-                    'message',
-                    timeout=300.0,
-                    check=lambda m: m.author == member and m.channel == dm
-                )
-                additional_info["former_reason"] = reason_msg.content
-                
-        except asyncio.TimeoutError:
-            await dm.send("⏳ You did not answer in time. Staff will be notified for review.")
-            return False
-
-        # Question 2: Current member check
-        try:
-            await dm.send("**Are you currently a member of Impedance?** (yes/no)")
-            current_member_msg = await client.wait_for(
-                'message',
-                timeout=300.0,
-                check=lambda m: m.author == member and m.channel == dm and m.content.lower() in ['yes', 'no', 'y', 'n']
-            )
-            current_member_response = current_member_msg.content.lower()
-            
-            # If current member, ask for IGN and start verification process
-            if current_member_response in ['yes', 'y']:
-                additional_info["is_current_member"] = True
-                await dm.send("**Please provide your in-game name (IGN) for verification:**")
-                ign_msg = await client.wait_for(
-                    'message',
-                    timeout=300.0,
-                    check=lambda m: m.author == member and m.channel == dm
-                )
-                additional_info["ign"] = ign_msg.content
-                
-                # Post to admin channel for member verification
-                staff_ch = client.get_channel(CHANNELS["staff_review"])
-                if staff_ch:
-                    embed = discord.Embed(
-                        title="🪖 Member Access Request",
-                        description=f"**{member.display_name}** (`{member.name}`) claims to be a current member and requests full server access.",
-                        color=0x00ff00
-                    )
-                    embed.add_field(name="In-Game Name", value=additional_info["ign"], inline=False)
-                    embed.add_field(name="Status", value="Awaiting verification", inline=True)
-                    
-                    if additional_info["is_former_member"]:
-                        embed.add_field(name="Former Member Info", value=f"**Reason for leaving:** {additional_info['former_reason']}", inline=False)
-                    
-                    verification_msg = await staff_ch.send(embed=embed)
-                    await verification_msg.add_reaction("👍")
-                    await verification_msg.add_reaction("👎")
-                    
-                    additional_info["member_verification_msg_id"] = verification_msg.id
-                    
-                    # Store in pending recruits for reaction handling
-                    pending_recruits[uid]["additional_info"] = additional_info
-                    pending_recruits[uid]["under_review"] = True
-                    pending_recruits[uid]["review_message_id"] = verification_msg.id
-                    save_json(PENDING_FILE, pending_recruits)
-                    
-                    await dm.send("✅ Your membership verification has been sent to admins. Please wait for approval.")
-                    return True  # Skip regular questions for current members
-                    
-        except asyncio.TimeoutError:
-            await dm.send("⏳ You did not answer in time. Staff will be notified for review.")
-            return False
-
-        # If not a current member, proceed with original questions
-        await dm.send("**Now proceeding with regular recruitment questions:**")
-        
-        answers = []
-        for q in RECRUIT_QUESTIONS:
-            try:
-                await dm.send(q)
-                reply = await client.wait_for(
-                    "message",
-                    timeout=600,
-                    check=lambda m: m.author.id == member.id and m.channel == dm
-                )
-                answers.append(reply.content.strip())
-                pending_recruits[uid]["answers"] = answers
-                pending_recruits[uid]["last"] = int(time.time())
-                save_json(PENDING_FILE, pending_recruits)
-                
-            except asyncio.TimeoutError:
-                await dm.send("⏳ You did not answer in time. Staff will be notified for review.")
-                return False
-
-        # Completed regular questions
-        await dm.send("✅ Thank you! Your answers will be reviewed by the admins. Please wait for further instructions.")
-        
-        # Send formatted answers to admin review channel
-        staff_ch = client.get_channel(CHANNELS["staff_review"])
-        if staff_ch:
-            labels = [
-                "Purpose of joining:",
-                "Invited by an Impedance member, and who:",
-                "At least Major rank:",
-                "Is the account you're using to apply your main account:",
-                "Willing to CCN:"
-            ]
-            
-            formatted = ""
-            for i, ans in enumerate(answers):
-                label = labels[i] if i < len(labels) else f"Question {i+1}:"
-                formatted += f"**{label}**\n{ans}\n\n"
-            
-            # Add former member info if applicable
-            if additional_info["is_former_member"]:
-                formatted += f"**Former Member Reason:**\n{additional_info['former_reason']}\n\n"
-            
-            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            embed = discord.Embed(
-                title=f"🪖 Recruit {member.display_name} for approval.",
-                description=f"{formatted}📅 **Date answered:** `{now_str}`",
-                color=discord.Color.blurple()
-            )
-            await staff_ch.send(embed=embed)
-        
-        return True
-        
-    except Exception as e:
-        log_error("DM_RECRUITMENT_FLOW", e)
-        return False
-
-# -----------------------
 # EVENTS WITH DEBUGGING
 # -----------------------
 @client.event
@@ -291,7 +134,7 @@ async def on_resumed():
 async def on_member_join(member):
     try:
         print(f"👤 [{datetime.now().strftime('%H:%M:%S')}] Member joined: {member.display_name}")
-        
+        # [YOUR ORIGINAL on_member_join CODE HERE - COPY IT EXACTLY]
         recruit_ch = client.get_channel(CHANNELS["recruit"])
         staff_ch = client.get_channel(CHANNELS["staff_review"])
 
@@ -319,17 +162,86 @@ async def on_member_join(member):
             "announce": notice_id,
             "under_review": False,
             "review_message_id": None,
-            "resolved": False,
-            "additional_info": {}
+            "resolved": False
         }
         save_json(PENDING_FILE, pending_recruits)
 
-        # NEW DM FLOW
-        dm_success = await dm_recruitment_flow(member)
+        # DM flow
+        try:
+            dm = await member.create_dm()
+            await dm.send("🪖 Welcome to Impedance! Please answer the approval questions one by one:")
 
-        if not dm_success:
-            # DM failed or timed out - create admin review message
-            print(f"⚠️ Could not complete DM flow for {member.display_name}")
+            for q in RECRUIT_QUESTIONS:
+                await dm.send(q)
+                try:
+                    reply = await client.wait_for(
+                        "message",
+                        check=lambda m: m.author.id == member.id and isinstance(m.channel, discord.DMChannel),
+                        timeout=600
+                    )
+                except asyncio.TimeoutError:
+                    pending_recruits[uid]["last"] = int(time.time())
+                    save_json(PENDING_FILE, pending_recruits)
+                    try:
+                        await dm.send("⏳ You did not answer in time. Staff will be notified for review.")
+                    except Exception:
+                        pass
+                    print(f"⌛ Recruit {member.display_name} timed out during interview.")
+                    return
+
+                pending_recruits[uid]["answers"].append(reply.content.strip())
+                pending_recruits[uid]["last"] = int(time.time())
+                save_json(PENDING_FILE, pending_recruits)
+
+            # Completed
+            try:
+                await dm.send("✅ Thank you! Your answers will be reviewed by the admins. Please wait for further instructions.")
+            except Exception:
+                pass
+
+            # delete announce message
+            try:
+                if notice_id and recruit_ch:
+                    msg = await recruit_ch.fetch_message(notice_id)
+                    await msg.delete()
+            except Exception:
+                pass
+
+            # Send formatted answers to admin review channel for record
+            try:
+                if staff_ch:
+                    labels = [
+                        "Purpose of joining:",
+                        "Invited by an Impedance member, and who:",
+                        "At least Major rank:",
+                        "Is the account you're using to apply your main account:",
+                        "Willing to CCN:"
+                    ]
+                    formatted = ""
+                    answers = pending_recruits[uid]["answers"]
+                    for i, ans in enumerate(answers):
+                        label = labels[i] if i < len(labels) else f"Question {i+1}:"
+                        formatted += f"**{label}**\n{ans}\n\n"
+                    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    embed = discord.Embed(
+                        title=f"🪖 Recruit {member.display_name} for approval.",
+                        description=f"{formatted}📅 **Date answered:** `{now_str}`",
+                        color=discord.Color.blurple()
+                    )
+                    await staff_ch.send(embed=embed)
+            except Exception:
+                pass
+
+            # resolved (remove pending)
+            try:
+                del pending_recruits[uid]
+                save_json(PENDING_FILE, pending_recruits)
+            except Exception:
+                pass
+
+        except Exception as e:
+            # DM failed (blocked) - create admin review message and add reactions
+            print(f"⚠️ Could not DM {member.display_name}: {e}")
             try:
                 if staff_ch:
                     display_name = f"{member.display_name} (@{member.name})"
@@ -359,22 +271,6 @@ async def on_member_join(member):
                     await recruit_ch.send(f"⚠️ {member.mention} did not respond to DMs. Admins have been notified.")
             except Exception as e2:
                 print(f"⚠️ Failed to create admin review post for DM-blocked recruit: {e2}")
-        else:
-            # Delete announce message if DM was successful
-            try:
-                if notice_id and recruit_ch:
-                    msg = await recruit_ch.fetch_message(notice_id)
-                    await msg.delete()
-            except Exception:
-                pass
-
-            # Remove from pending if it's not a current member waiting verification
-            if not pending_recruits[uid].get("under_review", False):
-                try:
-                    del pending_recruits[uid]
-                    save_json(PENDING_FILE, pending_recruits)
-                except Exception:
-                    pass
                 
     except Exception as e:
         log_error("ON_MEMBER_JOIN", e)
@@ -501,62 +397,71 @@ async def on_raw_reaction_add(payload):
 
         staff_ch = client.get_channel(CHANNELS["staff_review"])
 
+        # Delete the original verification message
+        try:
+            ch_for_msg = client.get_channel(payload.channel_id)
+            if ch_for_msg:
+                msg = await ch_for_msg.fetch_message(msg_id)
+                await msg.delete()
+        except Exception:
+            pass
+
         # Check if this is a member verification request
         additional_info = entry.get("additional_info", {})
         is_member_verification = additional_info.get("is_current_member", False)
 
-        if is_member_verification and action == "pardon":
-            # Grant Impedance⭐ role to verified member
-            try:
-                impedance_star_role = discord.utils.get(guild.roles, name=ROLES["impedance_star"])
-                if impedance_star_role and recruit_member:
-                    await recruit_member.add_roles(impedance_star_role)
-                    
-                    # Send approval notification
-                    if staff_ch:
-                        embed = discord.Embed(
-                            title="✅ Member Access Approved",
-                            description=f"**{recruit_member.display_name}** has been granted the {ROLES['impedance_star']} role.",
-                            color=0x00ff00
-                        )
-                        embed.add_field(name="Approved by", value=approver_text, inline=True)
-                        embed.add_field(name="IGN", value=additional_info.get("ign", "Not provided"), inline=True)
-                        await staff_ch.send(embed=embed)
+        if is_member_verification:
+            if emoji_name == "👍":  # APPROVE member
+                try:
+                    impedance_star_role = discord.utils.get(guild.roles, name=ROLES["impedance_star"])
+                    if impedance_star_role and recruit_member:
+                        await recruit_member.add_roles(impedance_star_role)
                         
+                        # Send approval notification
+                        if staff_ch:
+                            embed = discord.Embed(
+                                title="✅ Member Access Approved",
+                                description=f"**{recruit_member.display_name}** has been granted the {ROLES['impedance_star']} role.",
+                                color=0x00ff00
+                            )
+                            embed.add_field(name="Approved by", value=approver_text, inline=True)
+                            embed.add_field(name="IGN", value=additional_info.get("ign", "Not provided"), inline=True)
+                            await staff_ch.send(embed=embed)
+                            
+                        # Notify user
+                        try:
+                            dm = await recruit_member.create_dm()
+                            await dm.send("✅ Your membership has been verified! You've been granted full access to the server.")
+                        except Exception:
+                            pass
+                    else:
+                        if staff_ch:
+                            await staff_ch.send(f"❌ Error: {ROLES['impedance_star']} role not found. Please assign manually to {recruit_member.mention if recruit_member else 'the member'}")
+                            
+                except Exception as e:
+                    print(f"⚠️ Failed to assign role to member {uid}: {e}")
+                    if staff_ch:
+                        await staff_ch.send(f"❌ Error assigning role: {e}")
+                        
+            elif emoji_name == "👎":  # DENY member verification
+                if staff_ch:
+                    denial_embed = discord.Embed(
+                        title="❌ Member Access Denied",
+                        description=f"**{recruit_member.display_name if recruit_member else 'Unknown'}** claimed to be an Impedance member but was denied access.",
+                        color=0xff0000
+                    )
+                    denial_embed.add_field(name="Denied by", value=approver_text, inline=True)
+                    denial_embed.add_field(name="IGN Provided", value=additional_info.get("ign", "Not provided"), inline=True)
+                    await staff_ch.send(embed=denial_embed)
+                    
                     # Notify user
                     try:
-                        dm = await recruit_member.create_dm()
-                        await dm.send("✅ Your membership has been verified! You've been granted full access to the server.")
+                        if recruit_member:
+                            dm = await recruit_member.create_dm()
+                            await dm.send("❌ Your membership verification was not approved. Please contact admins for more information.")
                     except Exception:
                         pass
-                else:
-                    await staff_ch.send(f"❌ Error: {ROLES['impedance_star']} role not found. Please assign manually to {recruit_member.mention if recruit_member else 'the member'}")
-                    
-            except Exception as e:
-                print(f"⚠️ Failed to assign role to member {uid}: {e}")
-                if staff_ch:
-                    await staff_ch.send(f"❌ Error assigning role: {e}")
-                    
-        elif is_member_verification and action == "kick":
-            # Deny member verification
-            if staff_ch:
-                denial_embed = discord.Embed(
-                    title="❌ Member Access Denied",
-                    description=f"**{recruit_member.display_name if recruit_member else 'Unknown'}** claimed to be an Impedance member but was denied access.",
-                    color=0xff0000
-                )
-                denial_embed.add_field(name="Denied by", value=approver_text, inline=True)
-                denial_embed.add_field(name="IGN Provided", value=additional_info.get("ign", "Not provided"), inline=True)
-                await staff_ch.send(embed=denial_embed)
-                
-                # Notify user
-                try:
-                    if recruit_member:
-                        dm = await recruit_member.create_dm()
-                        await dm.send("❌ Your membership verification was not approved. Please contact admins for more information.")
-                except Exception:
-                    pass
-                    
+                        
         else:
             # Original kick/pardon logic for regular recruits
             if action == "kick":
