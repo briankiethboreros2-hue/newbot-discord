@@ -830,10 +830,10 @@ def run_bot_forever():
     print("🤖 Bot process ended.")
 
 # -----------------------
-# START
+# START - SIMPLIFIED
 # -----------------------
 if __name__ == "__main__":
-    print("🎯 Starting DEBUG bot version...")
+    print("🎯 Starting bot...")
     print(f"🔧 Python version: {sys.version}")
     print(f"🔧 Discord.py version: {discord.__version__}")
     
@@ -843,7 +843,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"⚠️ Pinger failed: {e}")
     
-    bot_thread = threading.Thread(target=run_bot_forever, daemon=True)
-    bot_thread.start()
-    
-    print("🌐 Flask server is already running via keep_alive.py")
+    # Just start the bot - Flask is already running via keep_alive import
+    run_bot_forever()
