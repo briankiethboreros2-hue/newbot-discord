@@ -12,19 +12,31 @@ from datetime import datetime, timezone
 from keep_alive import app, ping_self
 
 # -----------------------
-# EXTREME ERROR HANDLING
+# ENHANCED ERROR HANDLING
 # -----------------------
 def log_error(where, error):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"💥 [{timestamp}] CRASH in {where}: {error}")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    error_msg = f"💥 [{timestamp}] CRASH in {where}: {str(error)}"
+    print(error_msg)
+    
+    # Write to error log file
+    try:
+        with open("bot_errors.log", "a") as f:
+            f.write(error_msg + "\n")
+            traceback.print_exc(file=f)
+            f.write("-" * 50 + "\n")
+    except:
+        pass
+    
     traceback.print_exc()
 
 def global_error_handler(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         return
     log_error("GLOBAL", f"{exc_type.__name__}: {exc_value}")
-    time.sleep(5)
-    os._exit(1)
+    print("🔄 Attempting to restart in 30 seconds...")
+    time.sleep(30)
+    os._exit(1)  # This will trigger the restart loop
 
 sys.excepthook = global_error_handler
 
@@ -777,32 +789,53 @@ async def safe_inactivity_checker():
             await asyncio.sleep(60)
 
 # -----------------------
-# SUPERVISED STARTUP
+# ENHANCED SUPERVISED STARTUP
 # -----------------------
 def run_bot_forever():
     token = os.getenv("DISCORD_TOKEN")
     if not token:
-        print("❌ No token!")
+        print("❌ CRITICAL: No Discord token found in environment variables!")
+        print("💡 Make sure you've set the DISCORD_TOKEN environment variable")
         return
 
     restart_count = 0
-    while restart_count < 20:
+    max_restarts = 20
+    
+    while restart_count < max_restarts:
         try:
-            print(f"🚀 Starting bot (attempt {restart_count + 1})...")
+            print(f"🚀 [{datetime.now().strftime('%H:%M:%S')}] Starting bot (attempt {restart_count + 1}/{max_restarts})...")
             client.run(token, reconnect=True)
+            
+        except discord.LoginFailure as e:
+            print(f"❌ LOGIN FAILED: Invalid token - {e}")
+            break
+            
+        except discord.PrivilegedIntentsRequired as e:
+            print(f"❌ INTENTS ERROR: {e}")
+            print("💡 Enable privileged intents in Discord Developer Portal")
+            break
+            
         except Exception as e:
             restart_count += 1
-            log_error("BOT_STARTUP", e)
-            print(f"🔄 Restarting in 15 seconds...")
-            time.sleep(15)
+            log_error("BOT_CRASH", e)
+            
+            if restart_count >= max_restarts:
+                print("💀 Too many restart attempts. Giving up.")
+                break
+                
+            wait_time = min(30 * restart_count, 300)  # Max 5 minutes
+            print(f"🔄 Restarting in {wait_time} seconds...")
+            time.sleep(wait_time)
     
-    print("💀 Too many restarts. Giving up.")
+    print("🤖 Bot process ended.")
 
 # -----------------------
 # START
 # -----------------------
 if __name__ == "__main__":
     print("🎯 Starting DEBUG bot version...")
+    print(f"🔧 Python version: {sys.version}")
+    print(f"🔧 Discord.py version: {discord.__version__}")
     
     try:
         threading.Thread(target=ping_self, daemon=True).start()
@@ -813,5 +846,4 @@ if __name__ == "__main__":
     bot_thread = threading.Thread(target=run_bot_forever, daemon=True)
     bot_thread.start()
     
-    print("🌐 Starting Flask server...")
-    app.run(host="0.0.0.0", port=8080, debug=False, use_reloader=False)
+    print("🌐 Flask server is already running via keep_alive.py")
