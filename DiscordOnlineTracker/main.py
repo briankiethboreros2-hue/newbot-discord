@@ -9,7 +9,7 @@ import sys
 import traceback
 from datetime import datetime, timezone
 
-from keep_alive import start_keep_alive
+from keep_alive import app, ping_self
 
 # -----------------------
 # EXTREME ERROR HANDLING
@@ -799,21 +799,25 @@ def run_bot_forever():
     print("💀 Too many restarts. Giving up.")
 
 # -----------------------
-# START - FIXED FOR RENDER
+# START - ULTRA SIMPLE FOR RENDER
 # -----------------------
 if __name__ == "__main__":
-    print("🎯 Starting bot...")
+    print("🎯 Starting bot for Render...")
     print(f"🔧 Python version: {sys.version}")
     print(f"🔧 Discord.py version: {discord.__version__}")
     
-    # Start the keep-alive system (Flask + pinger)
-    import threading
+    # Start pinger in background
+    try:
+        threading.Thread(target=ping_self, daemon=True).start()
+        print("✅ Self-pinger started")
+    except Exception as e:
+        print(f"⚠️ Pinger failed: {e}")
     
-    # Start keep-alive in a separate thread
-    keep_alive_thread = threading.Thread(target=start_keep_alive, daemon=True)
-    keep_alive_thread.start()
+    # Start bot in background thread
+    bot_thread = threading.Thread(target=run_bot_forever, daemon=True)
+    bot_thread.start()
     
-    print("✅ Keep-alive system started")
-    
-    # Start the bot
-    run_bot_forever()
+    # Start Flask server (THIS BLOCKS - Render needs this in main thread)
+    port = int(os.environ.get("PORT", 8080))
+    print(f"🌐 Starting Flask server on port {port}...")
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
