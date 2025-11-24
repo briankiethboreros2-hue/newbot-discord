@@ -9,34 +9,22 @@ import sys
 import traceback
 from datetime import datetime, timezone
 
-from keep_alive import app, ping_self
+from keep_alive import start_keep_alive
 
 # -----------------------
-# ENHANCED ERROR HANDLING
+# EXTREME ERROR HANDLING
 # -----------------------
 def log_error(where, error):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    error_msg = f"💥 [{timestamp}] CRASH in {where}: {str(error)}"
-    print(error_msg)
-    
-    # Write to error log file
-    try:
-        with open("bot_errors.log", "a") as f:
-            f.write(error_msg + "\n")
-            traceback.print_exc(file=f)
-            f.write("-" * 50 + "\n")
-    except:
-        pass
-    
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"💥 [{timestamp}] CRASH in {where}: {error}")
     traceback.print_exc()
 
 def global_error_handler(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         return
     log_error("GLOBAL", f"{exc_type.__name__}: {exc_value}")
-    print("🔄 Attempting to restart in 30 seconds...")
-    time.sleep(30)
-    os._exit(1)  # This will trigger the restart loop
+    time.sleep(5)
+    os._exit(1)
 
 sys.excepthook = global_error_handler
 
@@ -789,59 +777,43 @@ async def safe_inactivity_checker():
             await asyncio.sleep(60)
 
 # -----------------------
-# ENHANCED SUPERVISED STARTUP
+# SUPERVISED STARTUP
 # -----------------------
 def run_bot_forever():
     token = os.getenv("DISCORD_TOKEN")
     if not token:
-        print("❌ CRITICAL: No Discord token found in environment variables!")
-        print("💡 Make sure you've set the DISCORD_TOKEN environment variable")
+        print("❌ No token!")
         return
 
     restart_count = 0
-    max_restarts = 20
-    
-    while restart_count < max_restarts:
+    while restart_count < 20:
         try:
-            print(f"🚀 [{datetime.now().strftime('%H:%M:%S')}] Starting bot (attempt {restart_count + 1}/{max_restarts})...")
+            print(f"🚀 Starting bot (attempt {restart_count + 1})...")
             client.run(token, reconnect=True)
-            
-        except discord.LoginFailure as e:
-            print(f"❌ LOGIN FAILED: Invalid token - {e}")
-            break
-            
-        except discord.PrivilegedIntentsRequired as e:
-            print(f"❌ INTENTS ERROR: {e}")
-            print("💡 Enable privileged intents in Discord Developer Portal")
-            break
-            
         except Exception as e:
             restart_count += 1
-            log_error("BOT_CRASH", e)
-            
-            if restart_count >= max_restarts:
-                print("💀 Too many restart attempts. Giving up.")
-                break
-                
-            wait_time = min(30 * restart_count, 300)  # Max 5 minutes
-            print(f"🔄 Restarting in {wait_time} seconds...")
-            time.sleep(wait_time)
+            log_error("BOT_STARTUP", e)
+            print(f"🔄 Restarting in 15 seconds...")
+            time.sleep(15)
     
-    print("🤖 Bot process ended.")
+    print("💀 Too many restarts. Giving up.")
 
 # -----------------------
-# START - SIMPLIFIED
+# START - FIXED FOR RENDER
 # -----------------------
 if __name__ == "__main__":
     print("🎯 Starting bot...")
     print(f"🔧 Python version: {sys.version}")
     print(f"🔧 Discord.py version: {discord.__version__}")
     
-    try:
-        threading.Thread(target=ping_self, daemon=True).start()
-        print("✅ Self-pinger started")
-    except Exception as e:
-        print(f"⚠️ Pinger failed: {e}")
+    # Start the keep-alive system (Flask + pinger)
+    import threading
     
-    # Just start the bot - Flask is already running via keep_alive import
+    # Start keep-alive in a separate thread
+    keep_alive_thread = threading.Thread(target=start_keep_alive, daemon=True)
+    keep_alive_thread.start()
+    
+    print("✅ Keep-alive system started")
+    
+    # Start the bot
     run_bot_forever()
