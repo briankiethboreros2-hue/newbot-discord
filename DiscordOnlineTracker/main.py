@@ -1,4 +1,4 @@
-# DEBUG VERSION - WILL SHOW US WHERE IT CRASHES
+# STABLE VERSION - BOT IN MAIN THREAD
 import threading
 import discord
 import os
@@ -12,18 +12,30 @@ from datetime import datetime, timezone
 from keep_alive import app, ping_self
 
 # -----------------------
-# EXTREME ERROR HANDLING
+# ENHANCED ERROR HANDLING
 # -----------------------
 def log_error(where, error):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"💥 [{timestamp}] CRASH in {where}: {error}")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    error_msg = f"💥 [{timestamp}] CRASH in {where}: {str(error)}"
+    print(error_msg)
+    
+    # Write to error log file
+    try:
+        with open("bot_errors.log", "a") as f:
+            f.write(error_msg + "\n")
+            traceback.print_exc(file=f)
+            f.write("-" * 50 + "\n")
+    except:
+        pass
+    
     traceback.print_exc()
 
 def global_error_handler(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         return
     log_error("GLOBAL", f"{exc_type.__name__}: {exc_value}")
-    time.sleep(5)
+    print("🔄 Attempting to restart in 30 seconds...")
+    time.sleep(30)
     os._exit(1)
 
 sys.excepthook = global_error_handler
@@ -101,7 +113,7 @@ def save_json(path, data):
         print(f"⚠️ Save failed: {e}")
 
 # -----------------------
-# EVENTS WITH DEBUGGING
+# EVENTS WITH DEBUGGING & STABILITY
 # -----------------------
 @client.event
 async def on_ready():
@@ -131,6 +143,11 @@ async def on_disconnect():
 @client.event
 async def on_resumed():
     print(f"🔄 [{datetime.now().strftime('%H:%M:%S')}] Bot session resumed")
+
+@client.event
+async def on_error(event, *args, **kwargs):
+    print(f"💥 Error in {event}: {args} {kwargs}")
+    traceback.print_exc()
 
 @client.event
 async def on_member_join(member):
@@ -716,13 +733,18 @@ async def on_raw_reaction_add(payload):
         log_error("ON_RAW_REACTION_ADD", e)
 
 # -----------------------
-# SAFE INACTIVITY CHECKER
+# SAFE INACTIVITY CHECKER WITH MEMORY CLEANUP
 # -----------------------
 async def safe_inactivity_checker():
     await client.wait_until_ready()
     while not client.is_closed():
         try:
             now = int(time.time())
+            
+            # Clean up old recent_joins to prevent memory leaks
+            global recent_joins
+            recent_joins = {k: v for k, v in recent_joins.items() if now - v < 3600}  # Keep only last hour
+            
             for uid, entry in list(pending_recruits.items()):
                 if entry.get("resolved") or entry.get("under_review"):
                     continue
@@ -799,25 +821,27 @@ def run_bot_forever():
     print("💀 Too many restarts. Giving up.")
 
 # -----------------------
-# START - ULTRA SIMPLE FOR RENDER
+# START - SIMPLE & STABLE (BOT IN MAIN THREAD)
 # -----------------------
 if __name__ == "__main__":
-    print("🎯 Starting bot for Render...")
+    print("🎯 Starting bot (MAIN THREAD)...")
     print(f"🔧 Python version: {sys.version}")
     print(f"🔧 Discord.py version: {discord.__version__}")
     
-    # Start pinger in background
-    try:
-        threading.Thread(target=ping_self, daemon=True).start()
-        print("✅ Self-pinger started")
-    except Exception as e:
-        print(f"⚠️ Pinger failed: {e}")
+    # Start Flask in background thread
+    def start_flask():
+        port = int(os.environ.get("PORT", 8080))
+        print(f"🌐 Starting Flask server on port {port}...")
+        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
     
-    # Start bot in background thread
-    bot_thread = threading.Thread(target=run_bot_forever, daemon=True)
-    bot_thread.start()
+    flask_thread = threading.Thread(target=start_flask, daemon=True)
+    flask_thread.start()
+    print("✅ Flask server started in background")
     
-    # Start Flask server (THIS BLOCKS - Render needs this in main thread)
-    port = int(os.environ.get("PORT", 8080))
-    print(f"🌐 Starting Flask server on port {port}...")
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+    # Start pinger
+    threading.Thread(target=ping_self, daemon=True).start()
+    print("✅ Self-pinger started")
+    
+    # Start bot in MAIN THREAD (this blocks - Render will restart if bot crashes)
+    print("🤖 Starting Discord bot in main thread...")
+    run_bot_forever()
