@@ -53,9 +53,9 @@ CHANNELS = {
 ROLES = {
     "queen": 1437578521374363769,
     "clan_master": 1389835747040694332,
-    "og_impèrios": 1437572916005834793,
-    "impèrios": 1437570031822176408,
-    "impèrios_star": "Impèrios🔥"
+    "og_imperius": 1437572916005834793,
+    "imperius": 1437570031822176408,
+    "imperius_star": "Imperius🔥"
 }
 
 REMINDER_THRESHOLD = 50
@@ -63,7 +63,7 @@ STATE_FILE = "reminder_state.json"
 PENDING_FILE = "pending_recruits.json"
 
 RECRUIT_QUESTIONS = [
-    "1️⃣ What is your purpose joining Impèrios Discord server?",
+    "1️⃣ What is your purpose joining Imperius Discord server?",
     "2️⃣ Did a member of the clan invite you? If yes, who?",
     "3️⃣ We require at least **Major 🎖 rank**. Are you Major First Class or above?",
     "4️⃣ Is the account you're using to apply in our main account?",
@@ -180,7 +180,7 @@ async def on_member_join(member):
         welcome_sent = False
         try:
             if recruit_ch:
-                await recruit_ch.send(f"🎉 Everyone welcome {member.mention} to Impèrios!")
+                await recruit_ch.send(f"🎉 Everyone welcome {member.mention} to Imperius!")
                 welcome_sent = True
         except Exception as e:
             print(f"⚠️ Failed to send welcome: {e}")
@@ -211,7 +211,7 @@ async def on_member_join(member):
         # NEW ENHANCED DM FLOW - NO DUPLICATES
         try:
             dm = await member.create_dm()
-            await dm.send("🪖 Welcome to Impèrios! Please answer the verification questions one by one:")
+            await dm.send("🪖 Welcome to Imperius! Please answer the verification questions one by one:")
             
             additional_info = {
                 "is_former_member": False,
@@ -250,7 +250,7 @@ async def on_member_join(member):
                     await staff_ch.send(embed=embed)
                 
                 # Skip the "current member" question and proceed to regular questions
-                await dm.send("✅ I have sent your statement to the admins of Impèrios, please wait for their response.")
+                await dm.send("✅ I have sent your statement to the admins of Imperius, please wait for their response.")
                 
                 # Update pending_recruits with additional info
                 pending_recruits[uid]["additional_info"] = additional_info
@@ -301,7 +301,7 @@ async def on_member_join(member):
                     if staff_ch:
                         labels = [
                             "Purpose of joining:",
-                            "Invited by an Impèrios member, and who:",
+                            "Invited by an Imperius member, and who:",
                             "At least Major rank:",
                             "Is the account you're using to apply your main account:",
                             "Willing to CCN:"
@@ -334,7 +334,7 @@ async def on_member_join(member):
 
             # If NOT a former member, proceed to current member check
             # Question 2: Current member check  
-            await dm.send("**Are you currently a member of Impèrios?** (yes/no)")
+            await dm.send("**Are you currently a member of Imperius?** (yes/no)")
             current_member_msg = await client.wait_for(
                 "message",
                 timeout=300.0,
@@ -436,7 +436,7 @@ async def on_member_join(member):
                 if staff_ch:
                     labels = [
                         "Purpose of joining:",
-                        "Invited by an Impèrios member, and who:",
+                        "Invited by an Imperius member, and who:",
                         "At least Major rank:",
                         "Is the account you're using to apply your main account:",
                         "Willing to CCN:"
@@ -513,7 +513,7 @@ async def on_message(message):
             if state["message_counter"] >= REMINDER_THRESHOLD:
                 r = REMINDERS[state.get("current_reminder", 0)]
                 embed = discord.Embed(
-                    title="Reminders Impèrios!",
+                    title="Reminders Imperius!",
                     description=f"**{r['title']}**\n\n{r['description']}",
                     color=discord.Color.orange()
                 )
@@ -536,9 +536,9 @@ async def on_presence_update(before, after):
                 title, color = f"❤️‍🔥 Queen {m.display_name} just came online!", discord.Color.gold()
             elif ROLES["clan_master"] in ids:
                 title, color = f"🌟 Clan Master {m.display_name} just came online!", discord.Color.blue()
-            elif ROLES["og_impèrios"] in ids:
+            elif ROLES["og_imperius"] in ids:
                 title, color = f"🐦‍🔥 OG {m.display_name} online!", discord.Color.red()
-            elif ROLES["impèrios"] in ids:
+            elif ROLES["imperius"] in ids:
                 title, color = f"🔥 Member {m.display_name} just came online!", discord.Color.purple()
             else:
                 return
@@ -585,7 +585,7 @@ async def on_raw_reaction_add(payload):
             if not member:
                 return False
             ids = [r.id for r in member.roles]
-            return any(ROLES.get(k) in ids for k in ("queen", "clan_master", "og_impèrios"))
+            return any(ROLES.get(k) in ids for k in ("queen", "clan_master", "og_imperius"))
 
         if not is_admin(reactor):
             return
@@ -607,7 +607,7 @@ async def on_raw_reaction_add(payload):
             if not member:
                 return "Unknown"
             ids = [r.id for r in member.roles]
-            if ROLES.get("og_impèrios") and ROLES["og_impèrios"] in ids:
+            if ROLES.get("og_imperius") and ROLES["og_imperius"] in ids:
                 return f"OG-{member.display_name}"
             if ROLES.get("clan_master") and ROLES["clan_master"] in ids:
                 return f"Clan Master {member.display_name}"
@@ -638,15 +638,15 @@ async def on_raw_reaction_add(payload):
         if is_member_verification:
             if emoji_name == "👍":  # APPROVE member
                 try:
-                    impèrios_star_role = discord.utils.get(guild.roles, name=ROLES["impèrios_star"])
-                    if impèrios_star_role and recruit_member:
-                        await recruit_member.add_roles(impèrios_star_role)
+                    imperius_star_role = discord.utils.get(guild.roles, name=ROLES["imperius_star"])
+                    if imperius_star_role and recruit_member:
+                        await recruit_member.add_roles(imperius_star_role)
                         
                         # Send approval notification
                         if staff_ch:
                             embed = discord.Embed(
                                 title="✅ Member Access Approved",
-                                description=f"**{recruit_member.display_name}** added to the Impèrios🔥 approved by {approver_text}",
+                                description=f"**{recruit_member.display_name}** added to the Imperius🔥 approved by {approver_text}",
                                 color=0x00ff00
                             )
                             await staff_ch.send(embed=embed)
@@ -659,7 +659,7 @@ async def on_raw_reaction_add(payload):
                             pass
                     else:
                         if staff_ch:
-                            await staff_ch.send(f"❌ Error: {ROLES['impèrios_star']} role not found. Please assign manually to {recruit_member.mention if recruit_member else 'the member'}")
+                            await staff_ch.send(f"❌ Error: {ROLES['imperius_star']} role not found. Please assign manually to {recruit_member.mention if recruit_member else 'the member'}")
                             
                 except Exception as e:
                     print(f"⚠️ Failed to assign role to member {uid}: {e}")
@@ -670,7 +670,7 @@ async def on_raw_reaction_add(payload):
                 if staff_ch:
                     denial_embed = discord.Embed(
                         title="❌ Member Access Denied",
-                        description=f"**{recruit_member.display_name if recruit_member else 'Unknown'}** claimed to be an Impèrios member and requesting full access to this server as a member, but denied by {approver_text}",
+                        description=f"**{recruit_member.display_name if recruit_member else 'Unknown'}** claimed to be an Imperius member and requesting full access to this server as a member, but denied by {approver_text}",
                         color=0xff0000
                     )
                     await staff_ch.send(embed=denial_embed)
@@ -692,7 +692,7 @@ async def on_raw_reaction_add(payload):
                         await guild.kick(recruit_member, reason="Rejected by admin reaction decision")
                         try:
                             dm = await recruit_member.create_dm()
-                            await dm.send("We are sorry to inform you that your application was rejected. Thank you for your interest in joining Impèrios.")
+                            await dm.send("We are sorry to inform you that your application was rejected. Thank you for your interest in joining Imperius.")
                         except Exception:
                             pass
                 except Exception as e:
@@ -700,7 +700,7 @@ async def on_raw_reaction_add(payload):
 
                 if staff_ch:
                     embed = discord.Embed(
-                        title=f"🪖 Recruit {kicked_display} kicked out of Impèrios",
+                        title=f"🪖 Recruit {kicked_display} kicked out of Imperius",
                         description=f"Recruit was removed due to refusal or inactivity.\n\nApproved by: {approver_text}",
                         color=discord.Color.red()
                     )
