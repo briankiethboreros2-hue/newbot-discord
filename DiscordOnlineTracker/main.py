@@ -686,6 +686,9 @@ async def on_message(message):
 @client.event
 async def on_presence_update(before, after):
     try:
+        # 🆕 ADD THIS LINE - declare global variable
+        global presence_cooldown
+        
         # Rate limiting - check if user is on cooldown
         current_time = time.time()
         user_id = after.id
@@ -746,7 +749,6 @@ async def on_presence_update(before, after):
                     log_error("ON_PRESENCE_UPDATE", e)
     except Exception as e:
         log_error("ON_PRESENCE_UPDATE", e)
-
 @client.event
 async def on_raw_reaction_add(payload):
     try:
@@ -1133,8 +1135,15 @@ async def safe_inactivity_checker():
                     log_error("PERIODIC_CLEANUP", e)
             
             # Clean up old recent_joins to prevent memory leaks
-            global recent_joins
+            global recent_joins  # ✅ Should already be here
             recent_joins = {k: v for k, v in recent_joins.items() if now - v < 3600}  # Keep only last hour
+            
+            # Clean up old presence cooldown entries
+            global presence_cooldown  # ✅ Should already be here
+            old_time = now - PRESENCE_COOLDOWN_TIME
+            presence_cooldown = {k: v for k, v in presence_cooldown.items() if v > old_time}
+            
+            # Rest of the function...
             
             # Clean up old presence cooldown entries
             global presence_cooldown
