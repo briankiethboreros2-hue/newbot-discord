@@ -511,7 +511,7 @@ async def on_member_join(member):
                 
                 # Update tracking
                 member_join_tracking[uid]["notes"].append(f"Answered question: {q[:50]}...")
-                save_join_tracking(member_join_tracking)
+                    save_join_tracking(member_join_tracking)
 
             # Completed regular questions
             try:
@@ -561,7 +561,7 @@ async def on_member_join(member):
             except Exception:
                 pass
             
-            return  # ✅ FIXED: Clear return statement added
+            return  # ✅ Clear return statement added
 
         except Exception as e:
             # DM failed (blocked or error) - create admin review message
@@ -686,7 +686,7 @@ async def on_message(message):
 @client.event
 async def on_presence_update(before, after):
     try:
-        # 🆕 ADD THIS LINE - declare global variable
+        # ✅ FIXED: Global declaration at the VERY BEGINNING
         global presence_cooldown
         
         # Rate limiting - check if user is on cooldown
@@ -1136,10 +1136,9 @@ async def safe_inactivity_checker():
                     log_error("PERIODIC_CLEANUP", e)
             
             # Clean up old recent_joins to prevent memory leaks
-            global recent_joins  # ✅ FIXED: Already declared globally
+            global recent_joins, presence_cooldown  # ✅ FIXED: Both declared together
             
             # Clean up old presence cooldown entries
-            global presence_cooldown  # ✅ FIXED: Already declared globally
             old_time = now - PRESENCE_COOLDOWN_TIME
             presence_cooldown = {k: v for k, v in presence_cooldown.items() if v > old_time}
             
