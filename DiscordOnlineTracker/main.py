@@ -8,6 +8,7 @@ import asyncio
 import sys
 import traceback
 from datetime import datetime, timezone
+from collections import defaultdict
 
 from keep_alive import app, ping_self
 
@@ -94,6 +95,10 @@ state = {"message_counter": 0, "current_reminder": 0}
 pending_recruits = {}
 # Add a cooldown system to prevent duplicate member join events
 recent_joins = {}
+
+# Rate limiting for presence updates
+presence_cooldown = {}  # {user_id: timestamp}
+PRESENCE_COOLDOWN_TIME = 300  # 5 minutes in seconds
 
 # -----------------------
 # LOAD/SAVE
@@ -204,7 +209,8 @@ async def on_member_join(member):
             "review_message_id": None,
             "resolved": False,
             "additional_info": {},
-            "welcome_sent": welcome_sent
+            "welcome_sent": welcome_sent,
+            "dm_failed_reason": None
         }
         save_json(PENDING_FILE, pending_recruits)
 
@@ -466,19 +472,35 @@ async def on_member_join(member):
                 pass
 
         except Exception as e:
-            # DM failed (blocked) - create admin review message and add reactions
+            # DM failed (blocked or error) - create admin review message
             print(f"⚠️ Could not complete DM flow for {member.display_name}: {e}")
+            
+            # Determine the likely reason for DM failure
+            error_type = "DM Error"
+            if "Cannot send messages to this user" in str(e) or "403" in str(e):
+                error_type = "User blocked DMs"
+            elif "timeout" in str(e).lower():
+                error_type = "No response timeout"
+            
             try:
                 if staff_ch:
                     display_name = f"{member.display_name} (@{member.name})"
                     embed = discord.Embed(
-                        title=f"🪖 Recruit {display_name} for approval.",
+                        title=f"🪖 Recruit {display_name} - DM Failed",
                         description=(
-                            "Could not DM recruit or recruit blocked DMs.\n\n"
-                            "React 👍 to kick, 👎 to pardon. (Only admins with special roles may decide.)"
+                            f"**Could not complete DM verification:** {error_type}\n\n"
+                            "**Options:**\n"
+                            "• 👍 = Kick recruit (failed verification)\n"
+                            "• 👎 = Keep recruit (try manual verification)\n\n"
+                            "*(Only admins with special roles may decide.)*"
                         ),
                         color=discord.Color.dark_gold()
                     )
+                    # Add user info to embed
+                    embed.add_field(name="User ID", value=f"`{member.id}`", inline=True)
+                    embed.add_field(name="Joined", value=f"<t:{int(time.time())}:R>", inline=True)
+                    embed.set_thumbnail(url=member.display_avatar.url)
+                    
                     review_msg = await staff_ch.send(embed=embed)
                     # auto-add thumb reactions
                     try:
@@ -490,11 +512,16 @@ async def on_member_join(member):
                     # mark under review
                     pending_recruits[uid]["under_review"] = True
                     pending_recruits[uid]["review_message_id"] = review_msg.id
+                    pending_recruits[uid]["dm_failed_reason"] = error_type
                     save_json(PENDING_FILE, pending_recruits)
 
-                # notify recruit channel
+                # notify recruit channel with clearer message
                 if recruit_ch:
-                    await recruit_ch.send(f"⚠️ {member.mention} did not respond to DMs. Admins have been notified.")
+                    if error_type == "User blocked DMs":
+                        await recruit_ch.send(f"⚠️ {member.mention} has DMs disabled. Please enable DMs to complete verification or contact staff.")
+                    else:
+                        await recruit_ch.send(f"⚠️ {member.mention} verification paused. Admins will review manually.")
+                    
             except Exception as e2:
                 print(f"⚠️ Failed to create admin review post for DM-blocked recruit: {e2}")
                 
@@ -507,6 +534,35 @@ async def on_message(message):
         if message.author.id == client.user.id:
             return
 
+        # Check for admin verification command
+        if message.content.startswith("!verify"):
+            # Check if author is admin
+            author_roles = [r.id for r in message.author.roles]
+            if any(ROLES.get(k) in author_roles for k in ("queen", "clan_master", "og_imperius")):
+                # Extract user mention
+                if len(message.mentions) > 0:
+                    member = message.mentions[0]
+                    uid = str(member.id)
+                    
+                    if uid in pending_recruits and pending_recruits[uid].get("under_review"):
+                        try:
+                            dm = await member.create_dm()
+                            await dm.send("🪖 An admin has requested manual verification. Please answer:")
+                            await dm.send(RECRUIT_QUESTIONS[0])
+                            
+                            # Store that manual verification started
+                            pending_recruits[uid]["manual_verify_started"] = time.time()
+                            save_json(PENDING_FILE, pending_recruits)
+                            
+                            await message.channel.send(f"✅ Manual verification started for {member.mention}")
+                        except Exception as e:
+                            await message.channel.send(f"❌ Could not DM {member.mention}: {e}")
+                    else:
+                        await message.channel.send(f"❌ {member.mention} is not in pending review or already verified.")
+                else:
+                    await message.channel.send("❌ Please mention a user to verify. Usage: `!verify @username`")
+
+        # Reminder channel message counting
         if message.channel.id == CHANNELS["reminder"]:
             state["message_counter"] = state.get("message_counter", 0) + 1
             save_json(STATE_FILE, state)
@@ -527,26 +583,64 @@ async def on_message(message):
 @client.event
 async def on_presence_update(before, after):
     try:
-        if before.status != after.status and str(after.status) in ["online", "idle", "dnd"]:
-            m = after
-            ids = [r.id for r in m.roles]
-            ch = client.get_channel(CHANNELS["main"])
-
-            if ROLES["queen"] in ids:
-                title, color = f"❤️‍🔥 Queen {m.display_name} just came online!", discord.Color.gold()
-            elif ROLES["clan_master"] in ids:
-                title, color = f"🌟 Clan Master {m.display_name} just came online!", discord.Color.blue()
-            elif ROLES["og_imperius"] in ids:
-                title, color = f"🐦‍🔥 OG {m.display_name} online!", discord.Color.red()
-            elif ROLES["imperius"] in ids:
-                title, color = f"🔥 Member {m.display_name} just came online!", discord.Color.purple()
-            else:
+        # Rate limiting - check if user is on cooldown
+        current_time = time.time()
+        user_id = after.id
+        
+        if user_id in presence_cooldown:
+            if current_time - presence_cooldown[user_id] < PRESENCE_COOLDOWN_TIME:
+                # User is on cooldown, skip this update
                 return
-
-            embed = discord.Embed(title=title, color=color)
-            embed.set_thumbnail(url=after.display_avatar.url)
-            if ch:
-                await ch.send(embed=embed)
+        
+        # Only announce when coming from offline to online/idle/dnd
+        if before.status != after.status:
+            # Only announce when going from offline to online/idle/dnd
+            if str(before.status) == "offline" and str(after.status) in ["online", "idle", "dnd"]:
+                m = after
+                ids = [r.id for r in m.roles]
+                ch = client.get_channel(CHANNELS["main"])
+                
+                if not ch:
+                    return
+                
+                # Check roles and send appropriate message
+                if ROLES["queen"] in ids:
+                    title, color = f"❤️‍🔥 Queen {m.display_name} just came online!", discord.Color.gold()
+                elif ROLES["clan_master"] in ids:
+                    title, color = f"🌟 Clan Master {m.display_name} just came online!", discord.Color.blue()
+                elif ROLES["og_imperius"] in ids:
+                    title, color = f"🐦‍🔥 OG {m.display_name} online!", discord.Color.red()
+                elif ROLES["imperius"] in ids:
+                    title, color = f"🔥 Member {m.display_name} just came online!", discord.Color.purple()
+                else:
+                    return
+                
+                embed = discord.Embed(title=title, color=color)
+                embed.set_thumbnail(url=after.display_avatar.url)
+                
+                # Add small delay to prevent rate limits
+                await asyncio.sleep(0.5)
+                
+                try:
+                    await ch.send(embed=embed)
+                    # Update cooldown
+                    presence_cooldown[user_id] = current_time
+                    
+                    # Clean up old cooldown entries periodically
+                    if len(presence_cooldown) > 1000:  # Prevent memory leak
+                        old_time = current_time - PRESENCE_COOLDOWN_TIME
+                        presence_cooldown = {k: v for k, v in presence_cooldown.items() if v > old_time}
+                        
+                except discord.HTTPException as e:
+                    if e.status == 429:  # Rate limited
+                        print(f"⚠️ [{datetime.now().strftime('%H:%M:%S')}] Rate limited on presence update, backing off...")
+                        # Increase cooldown when rate limited
+                        presence_cooldown[user_id] = current_time + 60  # Add extra minute
+                        await asyncio.sleep(5)  # Wait before trying again
+                    else:
+                        log_error("ON_PRESENCE_UPDATE", e)
+                except Exception as e:
+                    log_error("ON_PRESENCE_UPDATE", e)
     except Exception as e:
         log_error("ON_PRESENCE_UPDATE", e)
 
@@ -744,6 +838,11 @@ async def safe_inactivity_checker():
             # Clean up old recent_joins to prevent memory leaks
             global recent_joins
             recent_joins = {k: v for k, v in recent_joins.items() if now - v < 3600}  # Keep only last hour
+            
+            # Clean up old presence cooldown entries
+            global presence_cooldown
+            old_time = now - PRESENCE_COOLDOWN_TIME
+            presence_cooldown = {k: v for k, v in presence_cooldown.items() if v > old_time}
             
             for uid, entry in list(pending_recruits.items()):
                 if entry.get("resolved") or entry.get("under_review"):
