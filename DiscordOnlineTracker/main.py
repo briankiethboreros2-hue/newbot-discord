@@ -62,12 +62,13 @@ ROLES = {
 REMINDER_THRESHOLD = 50
 STATE_FILE = "reminder_state.json"
 PENDING_FILE = "pending_recruits.json"
+JOIN_TRACKING_FILE = "member_join_tracking.json"  # 🆕 Persistent tracking
 
 RECRUIT_QUESTIONS = [
     "1️⃣ What is your purpose joining Imperius Discord server?",
     "2️⃣ Did a member of the clan invite you? If yes, who?",
     "3️⃣ We require at least **Major 🎖 rank**. Are you Major First Class or above?",
-    "4️⃣ Is the account you're using to apply in our main account?",
+    "4️⃣ Is the account you're using to apply your main account?",
     "5️⃣ Are you willing to change your in-game name to our clan format? (e.g., IM-Ryze)"
 ]
 
@@ -100,6 +101,9 @@ recent_joins = {}
 presence_cooldown = {}  # {user_id: timestamp}
 PRESENCE_COOLDOWN_TIME = 300  # 5 minutes in seconds
 
+# 🆕 Persistent join tracking (never gets cleaned up)
+member_join_tracking = {}
+
 # -----------------------
 # LOAD/SAVE
 # -----------------------
@@ -116,6 +120,13 @@ def save_json(path, data):
             json.dump(data, f)
     except Exception as e:
         print(f"⚠️ Save failed: {e}")
+
+# 🆕 Load join tracking
+def load_join_tracking():
+    return load_json(JOIN_TRACKING_FILE, {})
+
+def save_join_tracking(data):
+    save_json(JOIN_TRACKING_FILE, data)
 
 # -----------------------
 # NEW: CLEANUP FUNCTION FOR STUCK RECRUITS
@@ -144,17 +155,20 @@ def cleanup_stuck_recruits():
 async def on_ready():
     try:
         print(f"✅ [{datetime.now().strftime('%H:%M:%S')}] Bot is READY! Logged in as {client.user}")
-        global state, pending_recruits
+        global state, pending_recruits, member_join_tracking
         state = load_json(STATE_FILE, state)
         pending_recruits = load_json(PENDING_FILE, pending_recruits)
+        member_join_tracking = load_join_tracking()  # 🆕 Load persistent tracking
         
         # 🆕 Clean up stuck recruits from previous runs
         cleanup_stuck_recruits()
         
         print(f"📊 [{datetime.now().strftime('%H:%M:%S')}] Loaded state: {len(pending_recruits)} pending recruits")
+        print(f"📈 [{datetime.now().strftime('%H:%M:%S')}] Loaded tracking: {len(member_join_tracking)} members tracked")
         
         # Start background tasks
         client.loop.create_task(safe_inactivity_checker())
+        client.loop.create_task(weekly_role_checker())  # 🆕 Start weekly checker
         print(f"🔄 [{datetime.now().strftime('%H:%M:%S')}] Background tasks started")
         
     except Exception as e:
@@ -238,6 +252,22 @@ async def on_member_join(member):
         }
         save_json(PENDING_FILE, pending_recruits)
 
+        # 🆕 ENHANCED: Track ALL member joins (for long-term monitoring)
+        member_join_tracking[uid] = {
+            "joined_at": int(current_time),
+            "username": member.name,
+            "display_name": member.display_name,
+            "has_roles": False,  # Will be updated when roles are assigned
+            "last_checked": int(current_time),
+            "status": "pending_verification",
+            "verification_attempts": 1,
+            "dm_success": False,  # Updated based on DM flow
+            "notes": [f"Joined server at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
+        }
+        save_join_tracking(member_join_tracking)
+        
+        print(f"📝 [{datetime.now().strftime('%H:%M:%S')}] Added {member.display_name} to long-term tracking")
+
         # NEW ENHANCED DM FLOW - NO DUPLICATES
         try:
             dm = await member.create_dm()
@@ -287,6 +317,11 @@ async def on_member_join(member):
                 pending_recruits[uid]["last"] = int(time.time())
                 save_json(PENDING_FILE, pending_recruits)
                 
+                # Update tracking
+                member_join_tracking[uid]["dm_success"] = True
+                member_join_tracking[uid]["notes"].append("Responded to DM: Former member check")
+                save_join_tracking(member_join_tracking)
+                
                 # Proceed with regular questions for former members
                 await dm.send("**Now proceeding with regular recruitment questions:**")
                 
@@ -301,6 +336,13 @@ async def on_member_join(member):
                     except asyncio.TimeoutError:
                         pending_recruits[uid]["last"] = int(time.time())
                         save_json(PENDING_FILE, pending_recruits)
+                        
+                        # Update tracking
+                        member_join_tracking[uid]["status"] = "timed_out"
+                        member_join_tracking[uid]["last_checked"] = int(time.time())
+                        member_join_tracking[uid]["notes"].append("Timed out during interview")
+                        save_join_tracking(member_join_tracking)
+                        
                         try:
                             await dm.send("⏳ You did not answer in time. Staff will be notified for review.")
                         except Exception:
@@ -311,6 +353,10 @@ async def on_member_join(member):
                     pending_recruits[uid]["answers"].append(reply.content.strip())
                     pending_recruits[uid]["last"] = int(time.time())
                     save_json(PENDING_FILE, pending_recruits)
+                    
+                    # Update tracking
+                    member_join_tracking[uid]["notes"].append(f"Answered question: {q[:50]}...")
+                    save_join_tracking(member_join_tracking)
 
                 # Completed regular questions
                 try:
@@ -377,6 +423,11 @@ async def on_member_join(member):
             pending_recruits[uid]["last"] = int(time.time())
             save_json(PENDING_FILE, pending_recruits)
             
+            # Update tracking
+            member_join_tracking[uid]["dm_success"] = True
+            member_join_tracking[uid]["notes"].append("Responded to DM: Current member check")
+            save_join_tracking(member_join_tracking)
+            
             # If current member, ask for IGN and start verification process
             if current_member_response in ['yes', 'y']:
                 additional_info["is_current_member"] = True
@@ -391,6 +442,10 @@ async def on_member_join(member):
                 pending_recruits[uid]["additional_info"] = additional_info
                 pending_recruits[uid]["last"] = int(time.time())
                 save_json(PENDING_FILE, pending_recruits)
+                
+                # Update tracking
+                member_join_tracking[uid]["notes"].append(f"Claimed to be current member. IGN: {additional_info['ign']}")
+                save_join_tracking(member_join_tracking)
                 
                 # Post to admin channel for member verification
                 if staff_ch:
@@ -436,6 +491,13 @@ async def on_member_join(member):
                 except asyncio.TimeoutError:
                     pending_recruits[uid]["last"] = int(time.time())
                     save_json(PENDING_FILE, pending_recruits)
+                    
+                    # Update tracking
+                    member_join_tracking[uid]["status"] = "timed_out"
+                    member_join_tracking[uid]["last_checked"] = int(time.time())
+                    member_join_tracking[uid]["notes"].append("Timed out during interview")
+                    save_join_tracking(member_join_tracking)
+                    
                     try:
                         await dm.send("⏳ You did not answer in time. Staff will be notified for review.")
                     except Exception:
@@ -446,6 +508,10 @@ async def on_member_join(member):
                 pending_recruits[uid]["answers"].append(reply.content.strip())
                 pending_recruits[uid]["last"] = int(time.time())
                 save_json(PENDING_FILE, pending_recruits)
+                
+                # Update tracking
+                member_join_tracking[uid]["notes"].append(f"Answered question: {q[:50]}...")
+                save_join_tracking(member_join_tracking)
 
             # Completed regular questions
             try:
@@ -500,6 +566,12 @@ async def on_member_join(member):
         except Exception as e:
             # DM failed (blocked or error) - create admin review message
             print(f"⚠️ Could not complete DM flow for {member.display_name}: {e}")
+            
+            # Update tracking
+            member_join_tracking[uid]["status"] = "dm_failed"
+            member_join_tracking[uid]["last_checked"] = int(time.time())
+            member_join_tracking[uid]["notes"].append(f"DM failed: {str(e)[:100]}")
+            save_join_tracking(member_join_tracking)
             
             # Determine the likely reason for DM failure
             error_type = "DM Error"
@@ -579,6 +651,11 @@ async def on_message(message):
                             # Store that manual verification started
                             pending_recruits[uid]["manual_verify_started"] = time.time()
                             save_json(PENDING_FILE, pending_recruits)
+                            
+                            # Update tracking
+                            if uid in member_join_tracking:
+                                member_join_tracking[uid]["notes"].append(f"Manual verification started by {message.author.display_name}")
+                                save_join_tracking(member_join_tracking)
                             
                             await message.channel.send(f"✅ Manual verification started for {member.mention}")
                         except Exception as e:
@@ -678,15 +755,20 @@ async def on_raw_reaction_add(payload):
             
         msg_id = payload.message_id
         uid = None
+        entry = None
+        
+        # Find which entry this reaction belongs to
         for k, v in pending_recruits.items():
             if v.get("review_message_id") == msg_id and not v.get("resolved") and v.get("under_review"):
                 uid = k
+                entry = v
                 break
-        if not uid:
+        
+        if not uid or not entry:
             return
 
         emoji_name = getattr(payload.emoji, "name", None)
-        if emoji_name not in ("👍", "👎"):
+        if emoji_name not in ("👍", "👎", "⏰"):
             return
 
         guild = None
@@ -710,9 +792,6 @@ async def on_raw_reaction_add(payload):
         if not is_admin(reactor):
             return
 
-        entry = pending_recruits.get(uid)
-        if not entry:
-            return
         if entry.get("resolved"):
             return
 
@@ -722,6 +801,9 @@ async def on_raw_reaction_add(payload):
         # Check if this is a member verification request
         additional_info = entry.get("additional_info", {})
         is_member_verification = additional_info.get("is_current_member", False)
+        
+        # Check if this is a weekly cleanup batch
+        is_weekly_cleanup = entry.get("is_weekly_cleanup", False)
 
         def admin_label(member):
             if not member:
@@ -745,14 +827,138 @@ async def on_raw_reaction_add(payload):
 
         staff_ch = client.get_channel(CHANNELS["staff_review"])
 
-        # Delete the original verification message
-        try:
-            ch_for_msg = client.get_channel(payload.channel_id)
-            if ch_for_msg:
-                msg = await ch_for_msg.fetch_message(msg_id)
-                await msg.delete()
-        except Exception:
-            pass
+        # Handle weekly cleanup batch reactions
+        if is_weekly_cleanup:
+            # Find all members in this batch
+            members_in_batch = []
+            for batch_uid, batch_entry in pending_recruits.items():
+                if batch_entry.get("review_message_id") == msg_id and batch_entry.get("is_weekly_cleanup"):
+                    member = guild.get_member(int(batch_uid))
+                    if member:
+                        members_in_batch.append((batch_uid, member, batch_entry))
+            
+            if emoji_name == "👍":  # KICK all in batch
+                kicked_count = 0
+                for batch_uid, member, batch_entry in members_in_batch:
+                    try:
+                        await member.kick(reason=f"Weekly cleanup - kicked by {reactor.display_name}")
+                        kicked_count += 1
+                        
+                        # Update tracking
+                        if batch_uid in member_join_tracking:
+                            member_join_tracking[batch_uid]["status"] = "kicked_weekly_cleanup"
+                            member_join_tracking[batch_uid]["last_checked"] = int(time.time())
+                            save_join_tracking(member_join_tracking)
+                            
+                        # Mark as resolved
+                        batch_entry["resolved"] = True
+                        
+                        await asyncio.sleep(1)  # Rate limiting
+                    except Exception as e:
+                        print(f"Failed to kick {member.display_name}: {e}")
+                
+                if staff_ch:
+                    await staff_ch.send(f"👢 {reactor.mention} kicked {kicked_count} members from weekly cleanup.")
+                
+            elif emoji_name == "👎":  # PARDON all in batch (grant roles)
+                imperius_star_role = discord.utils.get(guild.roles, name=ROLES["imperius_star"])
+                pardoned_count = 0
+                
+                if imperius_star_role:
+                    for batch_uid, member, batch_entry in members_in_batch:
+                        try:
+                            await member.add_roles(imperius_star_role, reason=f"Weekly cleanup - pardoned by {reactor.display_name}")
+                            pardoned_count += 1
+                            
+                            # Update tracking
+                            if batch_uid in member_join_tracking:
+                                member_join_tracking[batch_uid]["status"] = "pardoned_weekly_cleanup"
+                                member_join_tracking[batch_uid]["has_roles"] = True
+                                member_join_tracking[batch_uid]["last_checked"] = int(time.time())
+                                save_join_tracking(member_join_tracking)
+                                
+                            # Mark as resolved
+                            batch_entry["resolved"] = True
+                            
+                            await asyncio.sleep(1)  # Rate limiting
+                        except Exception as e:
+                            print(f"Failed to pardon {member.display_name}: {e}")
+                    
+                    if staff_ch:
+                        await staff_ch.send(f"🛡️ {reactor.mention} pardoned {pardoned_count} members (granted Imperius🔥 role).")
+                else:
+                    if staff_ch:
+                        await staff_ch.send(f"❌ Could not find Imperius🔥 role!")
+                
+            elif emoji_name == "⏰":  # Mark as reviewed (no action)
+                reviewed_count = 0
+                for batch_uid, member, batch_entry in members_in_batch:
+                    batch_entry["resolved"] = True
+                    reviewed_count += 1
+                    
+                    # Update tracking
+                    if batch_uid in member_join_tracking:
+                        member_join_tracking[batch_uid]["status"] = "reviewed_no_action"
+                        member_join_tracking[batch_uid]["last_checked"] = int(time.time())
+                        save_join_tracking(member_join_tracking)
+                
+                if staff_ch:
+                    await staff_ch.send(f"⏰ {reactor.mention} marked {reviewed_count} members as reviewed (no action taken).")
+            
+            # Clean up all resolved entries in this batch
+            for batch_uid, member, batch_entry in members_in_batch:
+                if batch_entry.get("resolved"):
+                    if batch_uid in pending_recruits:
+                        del pending_recruits[batch_uid]
+            
+            save_json(PENDING_FILE, pending_recruits)
+            
+            # Delete the alert message
+            try:
+                ch_for_msg = client.get_channel(payload.channel_id)
+                if ch_for_msg:
+                    msg = await ch_for_msg.fetch_message(msg_id)
+                    await msg.delete()
+            except Exception:
+                pass
+            
+            return  # Exit after handling weekly cleanup
+
+        # Handle 24h alert reactions
+        elif entry.get("is_24h_alert"):
+            if emoji_name == "⏰":  # Extend deadline
+                # Reset the start time to now (give them 24 more hours)
+                entry["started"] = int(time.time())
+                entry["under_review"] = False
+                entry["is_24h_alert"] = False
+                entry["resolved"] = False
+                save_json(PENDING_FILE, pending_recruits)
+                
+                if staff_ch:
+                    await staff_ch.send(
+                        f"⏰ {reactor.mention} extended deadline for recruit {recruit_member.mention if recruit_member else 'Unknown'}. "
+                        f"Will check again in 24 hours."
+                    )
+                
+                # Delete the alert message
+                try:
+                    ch_for_msg = client.get_channel(payload.channel_id)
+                    if ch_for_msg:
+                        msg = await ch_for_msg.fetch_message(msg_id)
+                        await msg.delete()
+                except Exception:
+                    pass
+                return
+
+        # Delete the original verification message (for non-weekly-cleanup)
+        if not is_weekly_cleanup:
+            try:
+                ch_for_msg = client.get_channel(payload.channel_id)
+                if ch_for_msg:
+                    msg = await ch_for_msg.fetch_message(msg_id)
+                    await msg.delete()
+            except Exception:
+                pass
 
         # Handle member verification requests (current members)
         if is_member_verification:
@@ -761,6 +967,14 @@ async def on_raw_reaction_add(payload):
                     imperius_star_role = discord.utils.get(guild.roles, name=ROLES["imperius_star"])
                     if imperius_star_role and recruit_member:
                         await recruit_member.add_roles(imperius_star_role)
+                        
+                        # Update tracking - member got roles!
+                        if uid in member_join_tracking:
+                            member_join_tracking[uid]["status"] = "verified_member"
+                            member_join_tracking[uid]["has_roles"] = True
+                            member_join_tracking[uid]["last_checked"] = int(time.time())
+                            member_join_tracking[uid]["notes"].append(f"Granted {ROLES['imperius_star']} role by {approver_text}")
+                            save_join_tracking(member_join_tracking)
                         
                         # Send approval notification
                         if staff_ch:
@@ -795,6 +1009,12 @@ async def on_raw_reaction_add(payload):
                     )
                     await staff_ch.send(embed=denial_embed)
                     
+                    # Update tracking
+                    if uid in member_join_tracking:
+                        member_join_tracking[uid]["status"] = "member_verification_denied"
+                        member_join_tracking[uid]["last_checked"] = int(time.time())
+                        save_join_tracking(member_join_tracking)
+                    
                     # Notify user
                     try:
                         if recruit_member:
@@ -804,12 +1024,19 @@ async def on_raw_reaction_add(payload):
                         pass
                         
         else:
-            # Original kick/pardon logic for regular recruits
+            # Original kick/pardon logic for regular recruits (not weekly cleanup)
             if emoji_name == "👍":  # KICK regular recruit
                 kicked_display = recruit_member.display_name if recruit_member else f"ID {uid}"
                 try:
                     if recruit_member:
                         await guild.kick(recruit_member, reason="Rejected by admin reaction decision")
+                        
+                        # Update tracking
+                        if uid in member_join_tracking:
+                            member_join_tracking[uid]["status"] = "kicked"
+                            member_join_tracking[uid]["last_checked"] = int(time.time())
+                            save_join_tracking(member_join_tracking)
+                        
                         try:
                             dm = await recruit_member.create_dm()
                             await dm.send("We are sorry to inform you that your application was rejected. Thank you for your interest in joining Imperius.")
@@ -831,6 +1058,13 @@ async def on_raw_reaction_add(payload):
 
             else:  # PARDON regular recruit
                 pardoned_display = recruit_member.display_name if recruit_member else f"ID {uid}"
+                
+                # Update tracking
+                if uid in member_join_tracking:
+                    member_join_tracking[uid]["status"] = "pardoned"
+                    member_join_tracking[uid]["last_checked"] = int(time.time())
+                    save_join_tracking(member_join_tracking)
+                
                 if staff_ch:
                     embed = discord.Embed(
                         title=f"🪖 Recruit {pardoned_display} pardoned",
@@ -842,12 +1076,14 @@ async def on_raw_reaction_add(payload):
                     except Exception:
                         pass
 
-        try:
-            if uid in pending_recruits:
-                del pending_recruits[uid]
-                save_json(PENDING_FILE, pending_recruits)
-        except Exception:
-            pass
+        # Remove from pending (for non-weekly-cleanup, weekly cleanup already handled this)
+        if not is_weekly_cleanup:
+            try:
+                if uid in pending_recruits:
+                    del pending_recruits[uid]
+                    save_json(PENDING_FILE, pending_recruits)
+            except Exception:
+                pass
 
     except Exception as e:
         log_error("ON_RAW_REACTION_ADD", e)
@@ -905,6 +1141,70 @@ async def safe_inactivity_checker():
             old_time = now - PRESENCE_COOLDOWN_TIME
             presence_cooldown = {k: v for k, v in presence_cooldown.items() if v > old_time}
             
+            # 🆕 Check for recruits pending >24 hours (STUCK RECRUITS)
+            for uid, entry in list(pending_recruits.items()):
+                if entry.get("resolved") or entry.get("under_review"):
+                    continue
+                    
+                started = entry.get("started", now)
+                # If pending for 24+ hours and NOT under review
+                if now - started >= 86400:  # 24 hours
+                    print(f"⚠️ [{datetime.now().strftime('%H:%M:%S')}] Found recruit pending >24 hours: {uid}")
+                    
+                    staff_ch = client.get_channel(CHANNELS["staff_review"])
+                    if staff_ch:
+                        # Get member info
+                        display_name = None
+                        guild = staff_ch.guild if staff_ch else (client.guilds[0] if client.guilds else None)
+                        if guild:
+                            try:
+                                m = guild.get_member(int(uid))
+                                if m:
+                                    display_name = f"{m.display_name} (@{m.name})"
+                            except Exception:
+                                display_name = None
+                        
+                        if display_name is None:
+                            display_name = f"ID {uid}"
+                        
+                        # Create urgent alert for admins
+                        embed = discord.Embed(
+                            title="🚨 URGENT: Stuck Recruit (>24 hours)",
+                            description=(
+                                f"**Recruit {display_name} has been pending for OVER 24 HOURS!**\n\n"
+                                f"**Status:** Never responded to DMs\n"
+                                f"**Time pending:** {(now - started) // 3600} hours\n\n"
+                                f"**Options:**\n"
+                                f"• 👍 = Kick recruit (failed to respond)\n"
+                                f"• 👎 = Keep and try manual verification\n"
+                                f"• ⏰ = Extend deadline (wait longer)\n\n"
+                                f"*(This is an automated alert for long-pending recruits)*"
+                            ),
+                            color=discord.Color.red(),
+                            timestamp=datetime.now(timezone.utc)
+                        )
+                        
+                        embed.add_field(name="User ID", value=f"`{uid}`", inline=True)
+                        embed.add_field(name="Started", value=f"<t:{started}:R>", inline=True)
+                        
+                        try:
+                            review_msg = await staff_ch.send(embed=embed)
+                            await review_msg.add_reaction("👍")
+                            await review_msg.add_reaction("👎")
+                            await review_msg.add_reaction("⏰")
+                            
+                            # Mark as under review to prevent duplicate alerts
+                            entry["under_review"] = True
+                            entry["review_message_id"] = review_msg.id
+                            entry["is_24h_alert"] = True
+                            save_json(PENDING_FILE, pending_recruits)
+                            
+                            print(f"✅ [{datetime.now().strftime('%H:%M:%S')}] Sent 24h alert for recruit {uid}")
+                            
+                        except Exception as e:
+                            print(f"⚠️ Failed to send 24h alert for uid {uid}: {e}")
+            
+            # Original inactivity checking (10 minutes)
             for uid, entry in list(pending_recruits.items()):
                 if entry.get("resolved") or entry.get("under_review"):
                     continue
@@ -957,6 +1257,139 @@ async def safe_inactivity_checker():
         except Exception as e:
             log_error("INACTIVITY_CHECKER", e)
             await asyncio.sleep(60)
+
+# -----------------------
+# 🆕 WEEKLY ROLE CHECKER FOR GHOST MEMBERS (SIMPLIFIED REACTION-BASED)
+# -----------------------
+async def weekly_role_checker():
+    """Check weekly for members without roles who joined >7 days ago"""
+    await client.wait_until_ready()
+    
+    # Run every 24 hours
+    while not client.is_closed():
+        try:
+            await asyncio.sleep(24 * 3600)  # 24 hours
+            
+            now = int(time.time())
+            print(f"🔄 [{datetime.now().strftime('%H:%M:%S')}] Running weekly role check...")
+            
+            guild = None
+            for g in client.guilds:
+                guild = g
+                break
+            
+            if not guild:
+                continue
+            
+            # Get staff channel
+            staff_ch = client.get_channel(CHANNELS["staff_review"])
+            if not staff_ch:
+                continue
+            
+            # Get all clan roles
+            imperius_star_role = discord.utils.get(guild.roles, name=ROLES["imperius_star"])
+            clan_role_ids = [
+                ROLES.get("imperius"),
+                ROLES.get("og_imperius"),
+                ROLES.get("clan_master"),
+                ROLES.get("queen")
+            ]
+            
+            # Find members without clan roles who joined >7 days ago
+            old_members_without_roles = []
+            
+            async for member in guild.fetch_members(limit=None):
+                # Skip bots
+                if member.bot:
+                    continue
+                
+                # Check if member has any clan role
+                has_clan_role = False
+                for role in member.roles:
+                    if role == imperius_star_role or role.id in clan_role_ids:
+                        has_clan_role = True
+                        break
+                
+                # If no clan role and joined >7 days ago
+                if not has_clan_role:
+                    joined_at = member.joined_at
+                    if joined_at:
+                        days_since_join = (datetime.now(timezone.utc) - joined_at).days
+                        if days_since_join >= 7:  # 7+ days old
+                            old_members_without_roles.append({
+                                "member": member,
+                                "days_since_join": days_since_join,
+                                "join_date": joined_at.strftime("%Y-%m-%d"),
+                                "tracking_data": member_join_tracking.get(str(member.id), {})
+                            })
+            
+            if old_members_without_roles:
+                print(f"⚠️ [{datetime.now().strftime('%H:%M:%S')}] Found {len(old_members_without_roles)} members >7 days old without roles!")
+                
+                # Group members into batches of 10 (Discord embed limits)
+                for batch_num in range(0, len(old_members_without_roles), 10):
+                    batch = old_members_without_roles[batch_num:batch_num + 10]
+                    
+                    # Create alert embed for this batch
+                    embed = discord.Embed(
+                        title=f"🚨 WEEKLY CLEANUP ALERT (Batch {batch_num//10 + 1})",
+                        description=f"**Found {len(batch)} member(s) in server for 7+ days WITHOUT CLAN ROLES**\n\n"
+                                  f"These members likely never completed verification.",
+                        color=0xff0000,
+                        timestamp=datetime.now(timezone.utc)
+                    )
+                    
+                    # Add each member in batch
+                    for i, data in enumerate(batch):
+                        member = data["member"]
+                        embed.add_field(
+                            name=f"{i+1}. {member.display_name}",
+                            value=f"**Joined:** {data['days_since_join']} days ago\n**ID:** `{member.id}`\n**Mention:** {member.mention}",
+                            inline=False
+                        )
+                    
+                    embed.add_field(
+                        name="🛠️ Admin Actions",
+                        value=(
+                            "**React with:**\n"
+                            "• 👍 = Kick all members in this batch\n"
+                            "• 👎 = Pardon all members (grant Imperius🔥 role)\n"
+                            "• ⏰ = Mark as reviewed (no action)\n\n"
+                            "*(Only admins with special roles may decide.)*"
+                        ),
+                        inline=False
+                    )
+                    
+                    # Send alert with reactions
+                    alert_msg = await staff_ch.send(embed=embed)
+                    await alert_msg.add_reaction("👍")
+                    await alert_msg.add_reaction("👎")
+                    await alert_msg.add_reaction("⏰")
+                    
+                    # Store batch info for reaction handling
+                    for i, data in enumerate(batch):
+                        member_id = str(data["member"].id)
+                        if member_id not in pending_recruits:
+                            pending_recruits[member_id] = {
+                                "started": int(time.time()),
+                                "under_review": True,
+                                "review_message_id": alert_msg.id,
+                                "is_weekly_cleanup": True,
+                                "batch_number": batch_num // 10 + 1,
+                                "member_info": {
+                                    "display_name": data["member"].display_name,
+                                    "days_since_join": data["days_since_join"]
+                                }
+                            }
+                    
+                    save_json(PENDING_FILE, pending_recruits)
+                    
+            else:
+                print(f"✅ [{datetime.now().strftime('%H:%M:%S')}] No members >7 days old without roles")
+                
+        except Exception as e:
+            log_error("WEEKLY_ROLE_CHECKER", e)
+            await asyncio.sleep(3600)  # Wait 1 hour on error
 
 # -----------------------
 # SUPERVISED STARTUP
