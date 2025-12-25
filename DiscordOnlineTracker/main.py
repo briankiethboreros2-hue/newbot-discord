@@ -687,8 +687,8 @@ async def on_member_join(member):
             
             # Send initial DM
             embed = discord.Embed(
-                title="🎮 Imperitas Clan Recruitment",
-                description="Welcome to Imperitas! Please answer the following questions.",
+                title="🎮 Impèrius Clan Recruitment",
+                description="Welcome to Impèrius! Please answer the following questions.",
                 color=discord.Color.blue()
             )
             embed.set_footer(text="Type 'cancel' at any time to stop the application")
@@ -1180,7 +1180,7 @@ async def on_raw_reaction_add(payload):
                     # Try to send DM
                     try:
                         dm = await applicant.create_dm()
-                        await dm.send("❌ Unfortunately, your application to Imperitas has been rejected. You will be removed from the server.")
+                        await dm.send("❌ Unfortunately, your application to Impèrius has been rejected. You will be removed from the server.")
                     except:
                         pass
                 else:
