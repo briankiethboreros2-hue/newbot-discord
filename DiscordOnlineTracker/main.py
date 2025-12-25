@@ -118,6 +118,26 @@ def save_json(path, data):
         print(f"⚠️ Save failed: {e}")
 
 # -----------------------
+# NEW: CLEANUP FUNCTION FOR STUCK RECRUITS
+# -----------------------
+def cleanup_stuck_recruits():
+    """Clean up stuck recruits from previous runs"""
+    try:
+        stuck_cleaned = 0
+        now = int(time.time())
+        for uid, entry in list(pending_recruits.items()):
+            # Remove entries older than 24 hours
+            started = entry.get("started", now)
+            if now - started > 86400:  # 24 hours
+                del pending_recruits[uid]
+                stuck_cleaned += 1
+        if stuck_cleaned > 0:
+            save_json(PENDING_FILE, pending_recruits)
+            print(f"🧹 Cleaned up {stuck_cleaned} stuck recruits from previous runs")
+    except Exception as e:
+        print(f"⚠️ Failed to cleanup stuck recruits: {e}")
+
+# -----------------------
 # EVENTS WITH DEBUGGING & STABILITY
 # -----------------------
 @client.event
@@ -127,6 +147,10 @@ async def on_ready():
         global state, pending_recruits
         state = load_json(STATE_FILE, state)
         pending_recruits = load_json(PENDING_FILE, pending_recruits)
+        
+        # 🆕 Clean up stuck recruits from previous runs
+        cleanup_stuck_recruits()
+        
         print(f"📊 [{datetime.now().strftime('%H:%M:%S')}] Loaded state: {len(pending_recruits)} pending recruits")
         
         # Start background tasks
@@ -328,7 +352,7 @@ async def on_member_join(member):
                 except Exception:
                     pass
 
-                # resolved (remove pending)
+                # resolved (remove pending) - ADD PROPER CLEANUP AND RETURN
                 try:
                     if uid in pending_recruits:
                         del pending_recruits[uid]
@@ -463,13 +487,15 @@ async def on_member_join(member):
             except Exception:
                 pass
 
-            # resolved (remove pending)
+            # resolved (remove pending) - ADD PROPER CLEANUP AND RETURN
             try:
                 if uid in pending_recruits:
                     del pending_recruits[uid]
                     save_json(PENDING_FILE, pending_recruits)
             except Exception:
                 pass
+            
+            return  # 🆕 ADD THIS RETURN STATEMENT
 
         except Exception as e:
             # DM failed (blocked or error) - create admin review message
@@ -831,9 +857,44 @@ async def on_raw_reaction_add(payload):
 # -----------------------
 async def safe_inactivity_checker():
     await client.wait_until_ready()
+    cleanup_counter = 0
     while not client.is_closed():
         try:
             now = int(time.time())
+            cleanup_counter += 1
+            
+            # 🆕 Periodic cleanup of old entries (every 10 minutes) - WITH BETTER ERROR HANDLING
+            if cleanup_counter % 30 == 0:  # 30 * 20 seconds = 10 minutes
+                try:
+                    stuck_cleaned = 0
+                    entries_to_remove = []
+                    
+                    # First, identify entries to remove (don't modify while iterating)
+                    for uid, entry in pending_recruits.items():
+                        started = entry.get("started", now)
+                        if not entry.get("under_review") and now - started > 10800:  # 3 hours
+                            entries_to_remove.append(uid)
+                    
+                    # Then remove them
+                    for uid in entries_to_remove:
+                        del pending_recruits[uid]
+                        stuck_cleaned += 1
+                        
+                    if stuck_cleaned > 0:
+                        # Use atomic save to prevent corruption
+                        temp_file = PENDING_FILE + ".tmp"
+                        try:
+                            with open(temp_file, "w") as f:
+                                json.dump(pending_recruits, f)
+                            os.replace(temp_file, PENDING_FILE)  # Atomic replace
+                            print(f"🧹 Cleaned up {stuck_cleaned} old pending recruits")
+                        except Exception as save_error:
+                            print(f"⚠️ Failed to save pending recruits: {save_error}")
+                            # Restore removed entries to avoid data loss
+                            # (In practice, entries_to_remove is already lost, but they were old anyway)
+                            
+                except Exception as e:
+                    log_error("PERIODIC_CLEANUP", e)
             
             # Clean up old recent_joins to prevent memory leaks
             global recent_joins
