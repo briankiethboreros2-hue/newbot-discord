@@ -55,7 +55,7 @@ ROLES = {
     "clan_master": 1389835747040694332,
     "og_impèrios": 1437572916005834793,
     "impèrios": 1437570031822176408,
-    "impèrios_star": "Impèrios⭐"
+    "impèrios_star": "Impèrios🔥"
 }
 
 REMINDER_THRESHOLD = 50
@@ -533,13 +533,13 @@ async def on_presence_update(before, after):
             ch = client.get_channel(CHANNELS["main"])
 
             if ROLES["queen"] in ids:
-                title, color = f"👑 Queen {m.display_name} just came online!", discord.Color.gold()
+                title, color = f"❤️‍🔥 Queen {m.display_name} just came online!", discord.Color.gold()
             elif ROLES["clan_master"] in ids:
                 title, color = f"🌟 Clan Master {m.display_name} just came online!", discord.Color.blue()
             elif ROLES["og_impèrios"] in ids:
-                title, color = f"🎉 OG {m.display_name} online!", discord.Color.red()
+                title, color = f"🐦‍🔥 OG {m.display_name} online!", discord.Color.red()
             elif ROLES["impèrios"] in ids:
-                title, color = f"⭐ Member {m.display_name} just came online!", discord.Color.purple()
+                title, color = f"🔥 Member {m.display_name} just came online!", discord.Color.purple()
             else:
                 return
 
@@ -646,7 +646,7 @@ async def on_raw_reaction_add(payload):
                         if staff_ch:
                             embed = discord.Embed(
                                 title="✅ Member Access Approved",
-                                description=f"**{recruit_member.display_name}** added to the Impèrios⭐ approved by {approver_text}",
+                                description=f"**{recruit_member.display_name}** added to the Impèrios🔥 approved by {approver_text}",
                                 color=0x00ff00
                             )
                             await staff_ch.send(embed=embed)
