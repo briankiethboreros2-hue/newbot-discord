@@ -13,6 +13,14 @@ from collections import defaultdict
 from keep_alive import app, ping_self
 
 # -----------------------
+# 🛡️ SAFETY CONFIGURATION
+# -----------------------
+CLEANUP_ENABLED = True  # Set to False to disable message cleanup if issues arise
+CLEANUP_RATE_LIMIT = 1.0  # Seconds between message deletions (increase if rate limited)
+MAX_CLEANUP_RETRIES = 3  # Maximum retries for failed deletions
+SAVE_RETRY_COUNT = 3  # Retry count for file saves
+
+# -----------------------
 # ENHANCED ERROR HANDLING
 # -----------------------
 def log_error(where, error):
@@ -105,28 +113,209 @@ PRESENCE_COOLDOWN_TIME = 300  # 5 minutes in seconds
 member_join_tracking = {}
 
 # -----------------------
-# LOAD/SAVE
+# 🛡️ ENHANCED LOAD/SAVE WITH ATOMIC OPERATIONS
 # -----------------------
 def load_json(path, default):
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except:
-        return default
+    """Safely load JSON file with fallback"""
+    for attempt in range(SAVE_RETRY_COUNT):
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return default
+        except json.JSONDecodeError:
+            if attempt == SAVE_RETRY_COUNT - 1:  # Last attempt failed
+                print(f"⚠️ Corrupted JSON in {path}, restoring from backup if available")
+                # Try backup
+                backup_path = path + ".backup"
+                if os.path.exists(backup_path):
+                    try:
+                        with open(backup_path, "r") as f:
+                            return json.load(f)
+                    except:
+                        return default
+                return default
+            time.sleep(0.1)  # Brief delay before retry
+        except Exception as e:
+            if attempt == SAVE_RETRY_COUNT - 1:
+                print(f"⚠️ Failed to load {path}: {e}")
+                return default
+            time.sleep(0.1)
+    return default
+
+def atomic_save_json(path, data):
+    """Save JSON file atomically to prevent corruption"""
+    for attempt in range(SAVE_RETRY_COUNT):
+        try:
+            # Create backup first
+            if os.path.exists(path):
+                try:
+                    import shutil
+                    shutil.copy2(path, path + ".backup")
+                except:
+                    pass
+            
+            # Save to temp file first
+            temp_file = path + ".tmp"
+            with open(temp_file, "w") as f:
+                json.dump(data, f, indent=2)
+            
+            # Atomic replace
+            os.replace(temp_file, path)
+            return True
+            
+        except Exception as e:
+            if attempt == SAVE_RETRY_COUNT - 1:  # Last attempt
+                print(f"⚠️ Failed to save {path} after {SAVE_RETRY_COUNT} attempts: {e}")
+                # Clean up temp file
+                try:
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                except:
+                    pass
+                return False
+            time.sleep(0.2)  # Delay before retry
+    return False
 
 def save_json(path, data):
-    try:
-        with open(path, "w") as f:
-            json.dump(data, f)
-    except Exception as e:
-        print(f"⚠️ Save failed: {e}")
+    """Wrapper for atomic save"""
+    return atomic_save_json(path, data)
 
 # 🆕 Load join tracking
 def load_join_tracking():
     return load_json(JOIN_TRACKING_FILE, {})
 
 def save_join_tracking(data):
-    save_json(JOIN_TRACKING_FILE, data)
+    return atomic_save_json(JOIN_TRACKING_FILE, data)
+
+# -----------------------
+# 🛡️ SAFE MESSAGE CLEANUP HELPERS
+# -----------------------
+async def safe_delete_message(channel, msg_id, max_retries=MAX_CLEANUP_RETRIES):
+    """Safely delete a single message with retry logic"""
+    if not channel or not msg_id:
+        return False
+    
+    # Validate message ID
+    try:
+        msg_id_int = int(msg_id)
+    except (ValueError, TypeError):
+        print(f"⚠️ Invalid message ID format: {msg_id}")
+        return False
+    
+    for attempt in range(max_retries):
+        try:
+            msg = await channel.fetch_message(msg_id_int)
+            
+            # Safety check: only delete bot's own messages
+            if msg.author.id != client.user.id:
+                print(f"⚠️ Won't delete message {msg_id} - not from bot (author: {msg.author.id})")
+                return False
+                
+            await msg.delete()
+            return True
+            
+        except discord.NotFound:
+            # Message already deleted - this is OK
+            return True
+        except discord.Forbidden:
+            print(f"⚠️ No permission to delete message {msg_id} in #{channel.name}")
+            return False
+        except discord.HTTPException as e:
+            if e.status == 429:  # Rate limited
+                wait_time = (2 ** attempt) + 1  # Exponential backoff
+                print(f"⏰ Rate limited deleting message {msg_id}, waiting {wait_time}s...")
+                await asyncio.sleep(wait_time)
+                continue
+            else:
+                print(f"⚠️ HTTP error deleting message {msg_id}: {e.status}")
+                break
+        except asyncio.TimeoutError:
+            print(f"⏰ Timeout fetching message {msg_id}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            break
+        except Exception as e:
+            print(f"⚠️ Unexpected error deleting message {msg_id}: {e}")
+            break
+    
+    return False
+
+async def safe_cleanup_messages(channel, message_ids):
+    """Safely clean up messages by their IDs with comprehensive error handling"""
+    if not CLEANUP_ENABLED or not channel or not message_ids:
+        return 0
+    
+    # Remove duplicates and invalid IDs
+    unique_ids = []
+    seen = set()
+    for msg_id in message_ids:
+        if msg_id and msg_id not in seen:
+            try:
+                int(msg_id)  # Validate it's a number
+                unique_ids.append(msg_id)
+                seen.add(msg_id)
+            except (ValueError, TypeError):
+                print(f"⚠️ Skipping invalid message ID: {msg_id}")
+    
+    if not unique_ids:
+        return 0
+    
+    print(f"🧹 Attempting to clean up {len(unique_ids)} messages in #{channel.name}")
+    
+    deleted_count = 0
+    for i, msg_id in enumerate(unique_ids):
+        success = await safe_delete_message(channel, msg_id)
+        if success:
+            deleted_count += 1
+        
+        # Rate limiting between deletions
+        if i < len(unique_ids) - 1:  # Not the last one
+            await asyncio.sleep(CLEANUP_RATE_LIMIT)
+    
+    return deleted_count
+
+async def safe_cleanup_recruit_messages(uid, recruit_ch):
+    """Safely clean up all messages related to a recruit with transaction-like safety"""
+    if not CLEANUP_ENABLED or uid not in pending_recruits or not recruit_ch:
+        return 0
+    
+    try:
+        # 🛡️ Get message IDs BEFORE attempting deletion
+        message_ids = []
+        entry = pending_recruits[uid]
+        
+        # Collect all message IDs to delete
+        for key in ["welcome_msg", "announce", "pause_msg"]:
+            msg_id = entry.get(key)
+            if msg_id:
+                message_ids.append(msg_id)
+        
+        if not message_ids:
+            return 0
+        
+        # 🛡️ Attempt cleanup
+        deleted = await safe_cleanup_messages(recruit_ch, message_ids)
+        
+        if deleted > 0:
+            print(f"✅ Successfully deleted {deleted}/{len(message_ids)} messages for recruit {uid}")
+        
+        # 🛡️ Clear message IDs from entry even if some failed
+        # This prevents repeated attempts on same messages
+        if uid in pending_recruits:
+            pending_recruits[uid]["welcome_msg"] = None
+            pending_recruits[uid]["announce"] = None
+            pending_recruits[uid]["pause_msg"] = None
+            # Don't save here - let caller handle saving
+        
+        return deleted
+        
+    except Exception as e:
+        print(f"⚠️ Critical error in cleanup for recruit {uid}: {e}")
+        # 🛡️ DON'T crash - log error and continue
+        log_error("SAFE_CLEANUP", f"Failed cleanup for {uid}: {e}")
+        return 0
 
 # -----------------------
 # NEW: CLEANUP FUNCTION FOR STUCK RECRUITS
@@ -155,6 +344,7 @@ def cleanup_stuck_recruits():
 async def on_ready():
     try:
         print(f"✅ [{datetime.now().strftime('%H:%M:%S')}] Bot is READY! Logged in as {client.user}")
+        print(f"⚙️  Cleanup feature: {'ENABLED' if CLEANUP_ENABLED else 'DISABLED'}")
         global state, pending_recruits, member_join_tracking
         state = load_json(STATE_FILE, state)
         pending_recruits = load_json(PENDING_FILE, pending_recruits)
@@ -219,30 +409,37 @@ async def on_member_join(member):
             print(f"🔄 [{datetime.now().strftime('%H:%M:%S')}] Member {member.display_name} already in pending, skipping")
             return
 
+        # 🛡️ Store message IDs for cleanup
+        welcome_msg_id = None
+        notice_msg_id = None
+        pause_msg_id = None
+
         # welcome (best-effort) - ONLY ONCE
         welcome_sent = False
         try:
             if recruit_ch:
-                await recruit_ch.send(f"🎉 Everyone welcome {member.mention} to Imperius!")
+                welcome_msg = await recruit_ch.send(f"🎉 Everyone welcome {member.mention} to Imperius!")
+                welcome_msg_id = welcome_msg.id
                 welcome_sent = True
         except Exception as e:
             print(f"⚠️ Failed to send welcome: {e}")
 
         # public notice to be deleted later - ONLY ONCE
-        notice_id = None
         try:
             if recruit_ch:
                 notice = await recruit_ch.send(f"🪖 {member.mention}, I have sent you a DM. Please check your DMs.")
-                notice_id = notice.id
+                notice_msg_id = notice.id
         except Exception as e:
             print(f"⚠️ Failed to send notice: {e}")
 
-        # Initialize pending recruit
+        # Initialize pending recruit WITH MESSAGE IDs
         pending_recruits[uid] = {
             "started": int(current_time),
             "last": int(current_time),
             "answers": [],
-            "announce": notice_id,
+            "announce": notice_msg_id,
+            "welcome_msg": welcome_msg_id,
+            "pause_msg": None,  # Will be set if DM fails
             "under_review": False,
             "review_message_id": None,
             "resolved": False,
@@ -364,13 +561,12 @@ async def on_member_join(member):
                 except Exception:
                     pass
 
-                # delete announce message
-                try:
-                    if notice_id and recruit_ch:
-                        msg = await recruit_ch.fetch_message(notice_id)
-                        await msg.delete()
-                except Exception:
-                    pass
+                # 🛡️ DELETE ALL RECRUIT CHANNEL MESSAGES
+                if CLEANUP_ENABLED and recruit_ch:
+                    deleted = await safe_cleanup_recruit_messages(uid, recruit_ch)
+                    if deleted > 0:
+                        print(f"✅ Cleaned up {deleted} messages for {member.display_name}")
+                    save_json(PENDING_FILE, pending_recruits)  # Save after cleanup
 
                 # Send formatted answers to admin review channel for record
                 try:
@@ -468,13 +664,13 @@ async def on_member_join(member):
                     await dm.send("✅ Your membership verification has been sent to admins. Please wait for approval.")
                     
                 # Skip remaining questions for current members
-                # Delete announce message
-                try:
-                    if notice_id and recruit_ch:
-                        msg = await recruit_ch.fetch_message(notice_id)
-                        await msg.delete()
-                except Exception:
-                    pass
+                # 🛡️ DELETE WELCOME & NOTICE MESSAGES
+                if CLEANUP_ENABLED and recruit_ch:
+                    deleted = await safe_cleanup_recruit_messages(uid, recruit_ch)
+                    if deleted > 0:
+                        print(f"✅ Cleaned up {deleted} messages for current member {member.display_name}")
+                    save_json(PENDING_FILE, pending_recruits)
+                    
                 return
 
             # If NOT a current member AND NOT a former member, proceed with original 5 questions
@@ -519,13 +715,12 @@ async def on_member_join(member):
             except Exception:
                 pass
 
-            # delete announce message
-            try:
-                if notice_id and recruit_ch:
-                    msg = await recruit_ch.fetch_message(notice_id)
-                    await msg.delete()
-            except Exception:
-                pass
+            # 🛡️ DELETE ALL RECRUIT CHANNEL MESSAGES
+            if CLEANUP_ENABLED and recruit_ch:
+                deleted = await safe_cleanup_recruit_messages(uid, recruit_ch)
+                if deleted > 0:
+                    print(f"✅ Cleaned up {deleted} messages for {member.display_name}")
+                save_json(PENDING_FILE, pending_recruits)
 
             # Send formatted answers to admin review channel for record
             try:
@@ -581,6 +776,16 @@ async def on_member_join(member):
                 error_type = "No response timeout"
             
             try:
+                if recruit_ch:
+                    # 🛡️ Send pause message and store its ID
+                    pause_msg = await recruit_ch.send(f"⚠️ {member.mention} verification paused. Admins will review manually.")
+                    pending_recruits[uid]["pause_msg"] = pause_msg.id
+                    save_json(PENDING_FILE, pending_recruits)
+                    
+            except Exception as pause_error:
+                print(f"⚠️ Failed to send pause message: {pause_error}")
+            
+            try:
                 if staff_ch:
                     display_name = f"{member.display_name} (@{member.name})"
                     embed = discord.Embed(
@@ -616,9 +821,16 @@ async def on_member_join(member):
                 # notify recruit channel with clearer message
                 if recruit_ch:
                     if error_type == "User blocked DMs":
-                        await recruit_ch.send(f"⚠️ {member.mention} has DMs disabled. Please enable DMs to complete verification or contact staff.")
+                        # Update pause message if it exists
+                        if pending_recruits[uid].get("pause_msg"):
+                            try:
+                                msg = await recruit_ch.fetch_message(pending_recruits[uid]["pause_msg"])
+                                await msg.edit(content=f"⚠️ {member.mention} has DMs disabled. Please enable DMs to complete verification or contact staff.")
+                            except Exception:
+                                pass
                     else:
-                        await recruit_ch.send(f"⚠️ {member.mention} verification paused. Admins will review manually.")
+                        # Pause message already sent above
+                        pass
                     
             except Exception as e2:
                 print(f"⚠️ Failed to create admin review post for DM-blocked recruit: {e2}")
@@ -829,6 +1041,7 @@ async def on_raw_reaction_add(payload):
             recruit_member = None
 
         staff_ch = client.get_channel(CHANNELS["staff_review"])
+        recruit_ch = client.get_channel(CHANNELS["recruit"])
 
         # Handle weekly cleanup batch reactions
         if is_weekly_cleanup:
@@ -846,6 +1059,10 @@ async def on_raw_reaction_add(payload):
                     try:
                         await member.kick(reason=f"Weekly cleanup - kicked by {reactor.display_name}")
                         kicked_count += 1
+                        
+                        # 🛡️ Clean up messages for kicked member
+                        if CLEANUP_ENABLED and recruit_ch:
+                            await safe_cleanup_recruit_messages(batch_uid, recruit_ch)
                         
                         # Update tracking
                         if batch_uid in member_join_tracking:
@@ -873,6 +1090,10 @@ async def on_raw_reaction_add(payload):
                             await member.add_roles(imperius_star_role, reason=f"Weekly cleanup - pardoned by {reactor.display_name}")
                             pardoned_count += 1
                             
+                            # 🛡️ Clean up messages for pardoned member
+                            if CLEANUP_ENABLED and recruit_ch:
+                                await safe_cleanup_recruit_messages(batch_uid, recruit_ch)
+                            
                             # Update tracking
                             if batch_uid in member_join_tracking:
                                 member_join_tracking[batch_uid]["status"] = "pardoned_weekly_cleanup"
@@ -898,6 +1119,10 @@ async def on_raw_reaction_add(payload):
                 for batch_uid, member, batch_entry in members_in_batch:
                     batch_entry["resolved"] = True
                     reviewed_count += 1
+                    
+                    # 🛡️ Clean up messages for reviewed member
+                    if CLEANUP_ENABLED and recruit_ch:
+                        await safe_cleanup_recruit_messages(batch_uid, recruit_ch)
                     
                     # Update tracking
                     if batch_uid in member_join_tracking:
@@ -962,6 +1187,12 @@ async def on_raw_reaction_add(payload):
                     await msg.delete()
             except Exception:
                 pass
+
+        # 🛡️ CLEAN UP RECRUIT CHANNEL MESSAGES (for both kick and pardon)
+        if CLEANUP_ENABLED and recruit_ch:
+            deleted = await safe_cleanup_recruit_messages(uid, recruit_ch)
+            if deleted > 0:
+                print(f"✅ Cleaned up {deleted} messages for recruit decision")
 
         # Handle member verification requests (current members)
         if is_member_verification:
@@ -1120,17 +1351,8 @@ async def safe_inactivity_checker():
                         stuck_cleaned += 1
                         
                     if stuck_cleaned > 0:
-                        # Use atomic save to prevent corruption
-                        temp_file = PENDING_FILE + ".tmp"
-                        try:
-                            with open(temp_file, "w") as f:
-                                json.dump(pending_recruits, f)
-                            os.replace(temp_file, PENDING_FILE)  # Atomic replace
-                            print(f"🧹 Cleaned up {stuck_cleaned} old pending recruits")
-                        except Exception as save_error:
-                            print(f"⚠️ Failed to save pending recruits: {save_error}")
-                            # Restore removed entries to avoid data loss
-                            # (In practice, entries_to_remove is already lost, but they were old anyway)
+                        print(f"🧹 Cleaned up {stuck_cleaned} old pending recruits")
+                        save_json(PENDING_FILE, pending_recruits)
                             
                 except Exception as e:
                     log_error("PERIODIC_CLEANUP", e)
@@ -1405,6 +1627,7 @@ def run_bot_forever():
     while restart_count < 20:
         try:
             print(f"🚀 Starting bot (attempt {restart_count + 1})...")
+            print(f"⚙️  Cleanup feature: {'ENABLED' if CLEANUP_ENABLED else 'DISABLED'}")
             client.run(token, reconnect=True)
         except Exception as e:
             restart_count += 1
