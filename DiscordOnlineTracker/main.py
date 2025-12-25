@@ -511,7 +511,7 @@ async def on_member_join(member):
                 
                 # Update tracking
                 member_join_tracking[uid]["notes"].append(f"Answered question: {q[:50]}...")
-                    save_join_tracking(member_join_tracking)
+                save_join_tracking(member_join_tracking)
 
             # Completed regular questions
             try:
