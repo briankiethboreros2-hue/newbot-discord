@@ -75,7 +75,7 @@ JOIN_TRACKING_FILE = "member_join_tracking.json"  # 🆕 Persistent tracking
 RECRUIT_QUESTIONS = [
     "1️⃣ What is your purpose joining Imperius Discord server?",
     "2️⃣ Did a member of the clan invite you? If yes, who?",
-    "3️⃣ We require at least **Major 🎖 rank**. Are you Major First Class or above?",
+    "3️⃣ We require at least **Eagle up 🎖 rank**. Are you atleast Eagle First Class or above?",
     "4️⃣ Is the account you're using to apply your main account?",
     "5️⃣ Are you willing to change your in-game name to our clan format? (e.g., IM-Ryze)"
 ]
