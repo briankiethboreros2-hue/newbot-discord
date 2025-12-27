@@ -8,6 +8,7 @@ import asyncio
 import sys
 import traceback
 import random
+import re
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
@@ -99,6 +100,11 @@ RECRUIT_QUESTIONS = [
 UPVOTE_EMOJI = "👍🏻"
 DOWNVOTE_EMOJI = "👎🏻"
 CLOCK_EMOJI = "⏰"
+
+# 🆕 WEEKLY CLEANUP EMOJIS
+KICK_EMOJI = "🦶"  # Foot emoji for kick
+GRANT_ROLE_EMOJI = "👑"  # Crown emoji for grant role
+REVIEW_EMOJI = "🔍"  # Magnifying glass for review
 
 REMINDERS = [
     {"title": "🟢 Activity Reminder", "description": "Members must keep their status set only to \"Online\" while active."},
@@ -313,6 +319,7 @@ recent_joins = {}
 presence_cooldown = {}
 PRESENCE_COOLDOWN_TIME = 300
 member_join_tracking = {}
+weekly_cleanup_messages = {}  # 🆕 Track weekly cleanup messages
 
 # -----------------------
 # 🛡️ ENHANCED LOAD/SAVE
@@ -353,8 +360,7 @@ class AtomicJSONManager:
             try:
                 if os.path.exists(path):
                     import shutil
-                    backup_path = path + ".backup"
-                    shutil.copy2(path, backup_path)
+                    shutil.copy2(path, path + ".backup")
                 
                 temp_file = path + ".tmp"
                 with open(temp_file, "w") as f:
@@ -620,7 +626,7 @@ async def on_member_join(member):
             member_join_tracking[uid]["status"] = "rejoining"
             member_join_tracking[uid]["rejoin_count"] = member_join_tracking[uid].get("rejoin_count", 0) + 1
             member_join_tracking[uid]["last_rejoin"] = current_time
-            member_join_tracking[uid]["notes"].append(f"Rejoined at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            member_join_tracking[uid]["notes"].append(f"Rejoined at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (previous: {old_status})")
             save_join_tracking(member_join_tracking)
         
         # Store message IDs for cleanup
@@ -666,17 +672,24 @@ async def on_member_join(member):
         save_json(PENDING_FILE, pending_recruits)
 
         # Update tracking
-        member_join_tracking[uid] = {
-            "joined_at": int(current_time),
-            "username": member.name,
-            "display_name": member.display_name,
-            "has_roles": False,
-            "last_checked": int(current_time),
-            "status": "pending_verification",
-            "verification_attempts": 1,
-            "dm_success": False,
-            "notes": [f"Joined/rejoined at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (previous: {old_status})"]
-        }
+        if uid not in member_join_tracking:
+            member_join_tracking[uid] = {
+                "joined_at": int(current_time),
+                "username": member.name,
+                "display_name": member.display_name,
+                "has_roles": False,
+                "last_checked": int(current_time),
+                "status": "pending_verification",
+                "verification_attempts": 1,
+                "dm_success": False,
+                "notes": [f"Joined/rejoined at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (previous: {old_status})"]
+            }
+        else:
+            member_join_tracking[uid]["joined_at"] = int(current_time)
+            member_join_tracking[uid]["last_checked"] = int(current_time)
+            member_join_tracking[uid]["status"] = "pending_verification"
+            member_join_tracking[uid]["notes"].append(f"Rejoined at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
         save_join_tracking(member_join_tracking)
         
         print(f"📝 [{datetime.now().strftime('%H:%M:%S')}] Added {member.display_name} to tracking")
@@ -1031,7 +1044,7 @@ async def on_presence_update(before, after):
         log_error("ON_PRESENCE_UPDATE", e)
 
 # -----------------------
-# 🛠️ FIXED: REACTION HANDLER WITH RETURNING MEMBER SUPPORT
+# 🆕 FIXED: ENHANCED REACTION HANDLER WITH WEEKLY CLEANUP SUPPORT
 # -----------------------
 @client.event
 async def on_raw_reaction_add(payload):
@@ -1046,21 +1059,7 @@ async def on_raw_reaction_add(payload):
         uid = None
         entry = None
         
-        # Find which entry this reaction belongs to
-        for k, v in pending_recruits.items():
-            if v.get("review_message_id") == msg_id and not v.get("resolved") and v.get("under_review"):
-                uid = k
-                entry = v.copy()
-                break
-        
-        if not uid or not entry:
-            return
-
-        emoji_str = str(payload.emoji)
-        
-        if emoji_str not in [UPVOTE_EMOJI, DOWNVOTE_EMOJI, CLOCK_EMOJI]:
-            return
-
+        # Get guild and reactor
         guild = None
         if payload.guild_id:
             guild = client.get_guild(payload.guild_id)
@@ -1074,13 +1073,41 @@ async def on_raw_reaction_add(payload):
         if not reactor:
             return
 
+        # Get the message
+        channel = guild.get_channel(payload.channel_id)
+        if not channel:
+            return
+        
+        try:
+            message = await channel.fetch_message(msg_id)
+        except:
+            return
+
+        # Check if it's a weekly cleanup message
+        if message.embeds and "WEEKLY CLEANUP" in message.embeds[0].title:
+            await handle_weekly_cleanup_reaction(payload, guild, reactor, message)
+            return
+        
+        # Handle regular recruit review messages
+        emoji_str = str(payload.emoji)
+        
+        # Find which entry this reaction belongs to
+        for k, v in pending_recruits.items():
+            if v.get("review_message_id") == msg_id and not v.get("resolved") and v.get("under_review"):
+                uid = k
+                entry = v.copy()
+                break
+        
+        if not uid or not entry:
+            return
+
+        if emoji_str not in [UPVOTE_EMOJI, DOWNVOTE_EMOJI, CLOCK_EMOJI]:
+            return
+
         # Check admin
         if not safety_wrappers or not safety_wrappers.is_admin(reactor):
             try:
-                channel = guild.get_channel(payload.channel_id)
-                if channel:
-                    message = await channel.fetch_message(msg_id)
-                    await message.remove_reaction(payload.emoji, reactor)
+                await message.remove_reaction(payload.emoji, reactor)
             except:
                 pass
             return
@@ -1123,7 +1150,7 @@ async def on_raw_reaction_add(payload):
         if emoji_str == UPVOTE_EMOJI:
             # Grant Impèrius🔥 role
             if applicant:
-                success, message = await safety_wrappers.assign_role_safe(
+                success, message_result = await safety_wrappers.assign_role_safe(
                     applicant, 
                     ROLES["imperius"], 
                     f"Passed tryout - voted by {reactor.display_name}"
@@ -1150,7 +1177,7 @@ async def on_raw_reaction_add(payload):
                         pass
                 else:
                     if staff_ch:
-                        await staff_ch.send(f"❌ Failed to give role to {applicant.mention if applicant else 'applicant'}: {message}")
+                        await staff_ch.send(f"❌ Failed to give role to {applicant.mention if applicant else 'applicant'}: {message_result}")
             else:
                 if staff_ch:
                     await staff_ch.send(f"❌ Could not find applicant with ID: {uid}")
@@ -1158,7 +1185,7 @@ async def on_raw_reaction_add(payload):
         elif emoji_str == DOWNVOTE_EMOJI:
             # Kick the user
             if applicant:
-                success, message = await safety_wrappers.kick_member_safe(
+                success, message_result = await safety_wrappers.kick_member_safe(
                     applicant,
                     f"Application rejected by {reactor.display_name}"
                 )
@@ -1185,7 +1212,7 @@ async def on_raw_reaction_add(payload):
                         pass
                 else:
                     if staff_ch:
-                        await staff_ch.send(f"❌ Failed to kick {applicant.mention if applicant else 'applicant'}: {message}")
+                        await staff_ch.send(f"❌ Failed to kick {applicant.mention if applicant else 'applicant'}: {message_result}")
             else:
                 if staff_ch:
                     await staff_ch.send(f"❌ Could not find applicant to kick: {uid}")
@@ -1229,10 +1256,7 @@ async def on_raw_reaction_add(payload):
             
         # Delete the review message
         try:
-            channel = guild.get_channel(payload.channel_id)
-            if channel:
-                message = await channel.fetch_message(msg_id)
-                await message.delete()
+            await message.delete()
         except Exception:
             pass
 
@@ -1240,6 +1264,152 @@ async def on_raw_reaction_add(payload):
         log_error("ON_RAW_REACTION_ADD", e)
         if health_monitor:
             health_monitor.record_error("reaction_error")
+
+# -----------------------
+# 🆕 WEEKLY CLEANUP REACTION HANDLER
+# -----------------------
+async def handle_weekly_cleanup_reaction(payload, guild, reactor, message):
+    """Handle reactions on weekly cleanup messages"""
+    try:
+        emoji_str = str(payload.emoji)
+        
+        # Check admin permission
+        if not safety_wrappers or not safety_wrappers.is_admin(reactor):
+            try:
+                await message.remove_reaction(payload.emoji, reactor)
+            except:
+                pass
+            return
+        
+        # Check if this message is already processed
+        if message.id in weekly_cleanup_messages and weekly_cleanup_messages[message.id].get("processed"):
+            return
+        
+        # Mark as processing
+        if message.id not in weekly_cleanup_messages:
+            weekly_cleanup_messages[message.id] = {}
+        weekly_cleanup_messages[message.id]["processing"] = True
+        
+        # Parse member IDs from the embed
+        embed = message.embeds[0]
+        members_to_process = []
+        
+        for field in embed.fields:
+            if "Joined:" in field.value:  # This is a member field
+                # Parse ID from field value
+                id_match = re.search(r'ID:\s*`(\d+)`', field.value)
+                if id_match:
+                    member_id = int(id_match.group(1))
+                    member = guild.get_member(member_id)
+                    if member:
+                        members_to_process.append({
+                            "member": member,
+                            "name": field.name.replace(f"{len(members_to_process)+1}. ", ""),
+                            "days_match": re.search(r'(\d+)\s+days', field.value)
+                        })
+        
+        if not members_to_process:
+            print("⚠️ No members found in cleanup message")
+            weekly_cleanup_messages[message.id]["processed"] = True
+            return
+        
+        staff_ch = client.get_channel(CHANNELS["staff_review"])
+        results = []
+        
+        # Process based on emoji
+        if emoji_str == KICK_EMOJI:
+            # Kick all listed members
+            for data in members_to_process:
+                member = data["member"]
+                success, result_msg = await safety_wrappers.kick_member_safe(
+                    member,
+                    f"Weekly cleanup - kicked by {reactor.display_name}"
+                )
+                
+                if success:
+                    results.append(f"✅ Kicked **{member.display_name}**")
+                    
+                    # Update tracking
+                    uid = str(member.id)
+                    if uid in member_join_tracking:
+                        member_join_tracking[uid]["status"] = "kicked_weekly"
+                        member_join_tracking[uid]["kicked_by"] = reactor.id
+                        member_join_tracking[uid]["kicked_at"] = int(time.time())
+                        member_join_tracking[uid]["notes"].append(f"Kicked in weekly cleanup by {reactor.display_name}")
+                        save_join_tracking(member_join_tracking)
+                else:
+                    results.append(f"❌ Failed to kick **{member.display_name}**: {result_msg}")
+            
+            # Send result
+            if staff_ch:
+                result_embed = discord.Embed(
+                    title="📊 Weekly Cleanup Results",
+                    description=f"**Action:** Kick All\n**Approved by:** {reactor.mention}\n\n**Results:**\n" + "\n".join(results),
+                    color=discord.Color.red(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                await staff_ch.send(embed=result_embed)
+            
+        elif emoji_str == GRANT_ROLE_EMOJI:
+            # Grant role to all listed members
+            for data in members_to_process:
+                member = data["member"]
+                success, result_msg = await safety_wrappers.assign_role_safe(
+                    member,
+                    ROLES["imperius"],
+                    f"Weekly cleanup - granted role by {reactor.display_name}"
+                )
+                
+                if success:
+                    results.append(f"✅ Granted role to **{member.display_name}**")
+                    
+                    # Update tracking
+                    uid = str(member.id)
+                    if uid in member_join_tracking:
+                        member_join_tracking[uid]["status"] = "approved_weekly"
+                        member_join_tracking[uid]["has_roles"] = True
+                        member_join_tracking[uid]["last_checked"] = int(time.time())
+                        member_join_tracking[uid]["notes"].append(f"Granted role in weekly cleanup by {reactor.display_name}")
+                        save_join_tracking(member_join_tracking)
+                else:
+                    results.append(f"❌ Failed to grant role to **{member.display_name}**: {result_msg}")
+            
+            # Send result
+            if staff_ch:
+                result_embed = discord.Embed(
+                    title="📊 Weekly Cleanup Results",
+                    description=f"**Action:** Grant Role\n**Approved by:** {reactor.mention}\n\n**Results:**\n" + "\n".join(results),
+                    color=discord.Color.green(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                await staff_ch.send(embed=result_embed)
+        
+        elif emoji_str == REVIEW_EMOJI:
+            # Mark for individual review
+            if staff_ch:
+                result_embed = discord.Embed(
+                    title="📊 Weekly Cleanup - Manual Review",
+                    description=f"**Action:** Manual Review Requested\n**Requested by:** {reactor.mention}\n\n**Members to review individually:**\n" + 
+                               "\n".join([f"• {data['member'].mention} ({data['member'].id})" for data in members_to_process]),
+                    color=discord.Color.orange(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                await staff_ch.send(embed=result_embed)
+        
+        # Mark message as processed
+        weekly_cleanup_messages[message.id]["processed"] = True
+        
+        # Remove the cleanup message after processing
+        try:
+            await asyncio.sleep(1)
+            await message.delete()
+        except:
+            pass
+            
+    except Exception as e:
+        log_error("WEEKLY_CLEANUP_HANDLER", e)
+        if health_monitor:
+            health_monitor.record_error("weekly_cleanup_error")
 
 # -----------------------
 # SAFE INACTIVITY CHECKER
@@ -1402,14 +1572,14 @@ async def safe_inactivity_checker():
             await asyncio.sleep(60)
 
 # -----------------------
-# WEEKLY ROLE CHECKER
+# 🆕 IMPROVED WEEKLY ROLE CHECKER
 # -----------------------
 async def weekly_role_checker():
     await client.wait_until_ready()
     
     while not client.is_closed():
         try:
-            await asyncio.sleep(24 * 3600)
+            await asyncio.sleep(24 * 3600)  # Run once per day
             
             now = int(time.time())
             print(f"🔄 Running weekly role check...")
@@ -1459,7 +1629,8 @@ async def weekly_role_checker():
                     if days_since_join >= 7:
                         old_members_without_roles.append({
                             "member": member,
-                            "days_since_join": days_since_join
+                            "days_since_join": days_since_join,
+                            "id": member.id
                         })
                 
                 if member_count >= 2000:
@@ -1468,7 +1639,8 @@ async def weekly_role_checker():
             
             print(f"📊 Weekly check: Processed {member_count} members, found {len(old_members_without_roles)} without roles")
             
-            batch_size = 8
+            # Send in batches of 5
+            batch_size = 5
             for batch_start in range(0, len(old_members_without_roles), batch_size):
                 batch = old_members_without_roles[batch_start:batch_start + batch_size]
                 
@@ -1489,27 +1661,26 @@ async def weekly_role_checker():
                 
                 embed.add_field(
                     name="🛠️ Admin Actions",
-                    value=f"**React:**\n{UPVOTE_EMOJI}=Kick\n{DOWNVOTE_EMOJI}=Grant role\n{CLOCK_EMOJI}=Review",
+                    value=f"**React:**\n{KICK_EMOJI}=Kick All\n{GRANT_ROLE_EMOJI}=Grant Role to All\n{REVIEW_EMOJI}=Review Individually",
                     inline=False
                 )
                 
+                embed.set_footer(text=f"Approved reactions will be logged with admin name")
+                
                 try:
                     alert_msg = await staff_ch.send(embed=embed)
-                    await alert_msg.add_reaction(UPVOTE_EMOJI)
-                    await alert_msg.add_reaction(DOWNVOTE_EMOJI)
-                    await alert_msg.add_reaction(CLOCK_EMOJI)
+                    await alert_msg.add_reaction(KICK_EMOJI)
+                    await alert_msg.add_reaction(GRANT_ROLE_EMOJI)
+                    await alert_msg.add_reaction(REVIEW_EMOJI)
                     
-                    for data in batch:
-                        member_id = str(data["member"].id)
-                        if member_id not in pending_recruits:
-                            pending_recruits[member_id] = {
-                                "started": now,
-                                "under_review": True,
-                                "review_message_id": alert_msg.id,
-                                "is_weekly_cleanup": True
-                            }
+                    # Store message ID for tracking
+                    weekly_cleanup_messages[alert_msg.id] = {
+                        "batch": batch,
+                        "created_at": now,
+                        "processed": False
+                    }
                     
-                    save_json(PENDING_FILE, pending_recruits)
+                    print(f"✅ Sent weekly cleanup batch {batch_start//batch_size + 1} with {len(batch)} members")
                     
                     if batch_start + batch_size < len(old_members_without_roles):
                         await asyncio.sleep(2)
@@ -1556,6 +1727,12 @@ async def on_ready():
         client.loop.create_task(weekly_role_checker())
         print(f"🔄 Background tasks started")
         
+        # Set bot status
+        await client.change_presence(activity=discord.Activity(
+            type=discord.ActivityType.watching,
+            name="Imperius Clan"
+        ))
+        
     except Exception as e:
         log_error("ON_READY", e)
         raise
@@ -1576,6 +1753,7 @@ def run_bot_forever():
         try:
             print(f"🚀 Starting bot (attempt {restart_count + 1}/{max_restarts})...")
             print(f"⚙️  Cleanup: {'ENABLED' if CLEANUP_ENABLED else 'DISABLED'}")
+            print(f"🛡️  Weekly cleanup emojis: {KICK_EMOJI} (kick), {GRANT_ROLE_EMOJI} (grant), {REVIEW_EMOJI} (review)")
             
             client.run(token, reconnect=True)
             
