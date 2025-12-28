@@ -17,8 +17,8 @@ from keep_alive import app, ping_self, start_keep_alive
 
 # Import modules
 try:
-    from modules.cleanup_system import CleanupSystem
-    from modules.poll_voting import PollVoting
+    from cleanup_system import CleanupSystem
+    from poll_voting import PollVoting
     print("✅ Successfully loaded modules")
 except ImportError as e:
     print(f"❌ Error importing modules: {e}")
