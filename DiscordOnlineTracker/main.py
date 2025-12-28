@@ -13,7 +13,7 @@ import signal
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
-from keep_alive import app, ping_self
+from keep_alive import app, ping_self, start_keep_alive
 
 # Import modules
 try:
