@@ -320,6 +320,13 @@ presence_cooldown = {}
 PRESENCE_COOLDOWN_TIME = 300
 member_join_tracking = {}
 weekly_cleanup_messages = {}  # 🆕 Track weekly cleanup messages
+individual_review_messages = {}  # 🆕 NEW: Track individual review messages
+
+# -----------------------
+# 🛡️ THREAD SAFETY LOCKS
+# -----------------------
+review_locks = {}  # Lock for individual review messages
+cleanup_locks = {}  # Lock for weekly cleanup messages
 
 # -----------------------
 # 🛡️ ENHANCED LOAD/SAVE
@@ -551,6 +558,8 @@ class SystemHealthMonitor:
         
         print(f"📝 Pending recruits: {len(pending_recruits)}")
         print(f"👤 Tracked members: {len(member_join_tracking)}")
+        print(f"🔍 Individual reviews: {len(individual_review_messages)}")
+        print(f"🧹 Weekly cleanup messages: {len(weekly_cleanup_messages)}")
         print("-" * 50)
 
 health_monitor = None
@@ -1044,7 +1053,7 @@ async def on_presence_update(before, after):
         log_error("ON_PRESENCE_UPDATE", e)
 
 # -----------------------
-# 🆕 FIXED: ENHANCED REACTION HANDLER WITH WEEKLY CLEANUP SUPPORT
+# 🆕 FIXED: ENHANCED REACTION HANDLER WITH THREAD-SAFE WEEKLY CLEANUP SUPPORT
 # -----------------------
 @client.event
 async def on_raw_reaction_add(payload):
@@ -1086,6 +1095,11 @@ async def on_raw_reaction_add(payload):
         # Check if it's a weekly cleanup message
         if message.embeds and "WEEKLY CLEANUP" in message.embeds[0].title:
             await handle_weekly_cleanup_reaction(payload, guild, reactor, message)
+            return
+            
+        # Check if it's an individual review message
+        if msg_id in individual_review_messages:
+            await handle_individual_review_reaction(payload, guild, reactor, message)
             return
         
         # Handle regular recruit review messages
@@ -1266,10 +1280,10 @@ async def on_raw_reaction_add(payload):
             health_monitor.record_error("reaction_error")
 
 # -----------------------
-# 🆕 WEEKLY CLEANUP REACTION HANDLER
+# 🆕 FIXED: THREAD-SAFE WEEKLY CLEANUP REACTION HANDLER
 # -----------------------
 async def handle_weekly_cleanup_reaction(payload, guild, reactor, message):
-    """Handle reactions on weekly cleanup messages"""
+    """Handle reactions on weekly cleanup messages with thread safety"""
     try:
         emoji_str = str(payload.emoji)
         
@@ -1281,14 +1295,19 @@ async def handle_weekly_cleanup_reaction(payload, guild, reactor, message):
                 pass
             return
         
-        # Check if this message is already processed
-        if message.id in weekly_cleanup_messages and weekly_cleanup_messages[message.id].get("processed"):
-            return
-        
-        # Mark as processing
-        if message.id not in weekly_cleanup_messages:
-            weekly_cleanup_messages[message.id] = {}
-        weekly_cleanup_messages[message.id]["processing"] = True
+        # 🛡️ THREAD-SAFE LOCK: Prevent race conditions
+        lock = cleanup_locks.setdefault(message.id, threading.Lock())
+        with lock:
+            # Check if this message is already processed
+            if message.id in weekly_cleanup_messages and weekly_cleanup_messages[message.id].get("processed"):
+                return
+            
+            # Mark as processing
+            if message.id not in weekly_cleanup_messages:
+                weekly_cleanup_messages[message.id] = {}
+            weekly_cleanup_messages[message.id]["processing"] = True
+            weekly_cleanup_messages[message.id]["processed_by"] = reactor.id
+            weekly_cleanup_messages[message.id]["processed_at"] = time.time()
         
         # Parse member IDs from the embed
         embed = message.embeds[0]
@@ -1305,12 +1324,14 @@ async def handle_weekly_cleanup_reaction(payload, guild, reactor, message):
                         members_to_process.append({
                             "member": member,
                             "name": field.name.replace(f"{len(members_to_process)+1}. ", ""),
-                            "days_match": re.search(r'(\d+)\s+days', field.value)
+                            "days_match": re.search(r'(\d+)\s+days', field.value),
+                            "member_id": member_id
                         })
         
         if not members_to_process:
             print("⚠️ No members found in cleanup message")
-            weekly_cleanup_messages[message.id]["processed"] = True
+            with lock:
+                weekly_cleanup_messages[message.id]["processed"] = True
             return
         
         staff_ch = client.get_channel(CHANNELS["staff_review"])
@@ -1318,7 +1339,7 @@ async def handle_weekly_cleanup_reaction(payload, guild, reactor, message):
         
         # Process based on emoji
         if emoji_str == KICK_EMOJI:
-            # Kick all listed members
+            # 🛠️ FIX: Kick All - should execute immediately with 1 admin vote
             for data in members_to_process:
                 member = data["member"]
                 success, result_msg = await safety_wrappers.kick_member_safe(
@@ -1349,9 +1370,9 @@ async def handle_weekly_cleanup_reaction(payload, guild, reactor, message):
                     timestamp=datetime.now(timezone.utc)
                 )
                 await staff_ch.send(embed=result_embed)
-            
+        
         elif emoji_str == GRANT_ROLE_EMOJI:
-            # Grant role to all listed members
+            # 🛠️ FIX: Grant Role to All - should execute immediately with 1 admin vote
             for data in members_to_process:
                 member = data["member"]
                 success, result_msg = await safety_wrappers.assign_role_safe(
@@ -1385,19 +1406,101 @@ async def handle_weekly_cleanup_reaction(payload, guild, reactor, message):
                 await staff_ch.send(embed=result_embed)
         
         elif emoji_str == REVIEW_EMOJI:
-            # Mark for individual review
+            # 🛠️ FIXED: Create individual review messages for each member with rate limiting
             if staff_ch:
-                result_embed = discord.Embed(
-                    title="📊 Weekly Cleanup - Manual Review",
-                    description=f"**Action:** Manual Review Requested\n**Requested by:** {reactor.mention}\n\n**Members to review individually:**\n" + 
-                               "\n".join([f"• {data['member'].mention} ({data['member'].id})" for data in members_to_process]),
+                # First, post a summary
+                summary_embed = discord.Embed(
+                    title="🔍 Weekly Cleanup - Individual Reviews Started",
+                    description=f"**Action:** Individual Review\n**Requested by:** {reactor.mention}\n\n**Members to review:** {len(members_to_process)}",
                     color=discord.Color.orange(),
                     timestamp=datetime.now(timezone.utc)
                 )
-                await staff_ch.send(embed=result_embed)
+                await staff_ch.send(embed=summary_embed)
+                
+                # Create individual review messages for each member with rate limiting
+                for i, data in enumerate(members_to_process):
+                    member = data["member"]
+                    
+                    # Create embed for individual review
+                    review_embed = discord.Embed(
+                        title=f"🔍 Weekly Cleanup Review - Member {i+1}/{len(members_to_process)}",
+                        description=f"**Member:** {member.mention} ({member.id})\n**Days without role:** {data['days_match'].group(1) if data['days_match'] else 'Unknown'}\n**Requested by:** {reactor.mention}",
+                        color=discord.Color.gold(),
+                        timestamp=datetime.now(timezone.utc)
+                    )
+                    
+                    # Add voting options
+                    voting_text = (
+                        f"**Vote:**\n"
+                        f"{UPVOTE_EMOJI} = Grant 'Impèrius🔥' role\n"
+                        f"{DOWNVOTE_EMOJI} = Kick from server\n"
+                        f"{CLOCK_EMOJI} = Conditional (keep without roles)"
+                    )
+                    
+                    review_embed.add_field(name="Decision", value=voting_text, inline=False)
+                    review_embed.set_footer(text=f"Individual review from weekly cleanup | 1 vote needed")
+                    review_embed.set_thumbnail(url=member.display_avatar.url if member.avatar else member.default_avatar.url)
+                    
+                    try:
+                        # Send the review message
+                        review_msg = await staff_ch.send(embed=review_embed)
+                        
+                        # Add reactions
+                        await review_msg.add_reaction(UPVOTE_EMOJI)
+                        await review_msg.add_reaction(DOWNVOTE_EMOJI)
+                        await review_msg.add_reaction(CLOCK_EMOJI)
+                        
+                        # 🛡️ THREAD-SAFE: Store in individual review tracking
+                        lock = review_locks.setdefault(review_msg.id, threading.Lock())
+                        with lock:
+                            individual_review_messages[review_msg.id] = {
+                                "member_id": member.id,
+                                "member_name": member.display_name,
+                                "requester_id": reactor.id,
+                                "requester_name": reactor.display_name,
+                                "cleanup_source": message.id,
+                                "created_at": time.time(),
+                                "processed": False
+                            }
+                        
+                        print(f"✅ Created individual review for {member.display_name} (message ID: {review_msg.id})")
+                        
+                    except discord.HTTPException as e:
+                        if e.status == 429:
+                            print(f"⏰ Rate limited creating review messages, waiting 2 seconds...")
+                            await asyncio.sleep(2)
+                            # Retry once
+                            try:
+                                review_msg = await staff_ch.send(embed=review_embed)
+                                await review_msg.add_reaction(UPVOTE_EMOJI)
+                                await review_msg.add_reaction(DOWNVOTE_EMOJI)
+                                await review_msg.add_reaction(CLOCK_EMOJI)
+                                
+                                lock = review_locks.setdefault(review_msg.id, threading.Lock())
+                                with lock:
+                                    individual_review_messages[review_msg.id] = {
+                                        "member_id": member.id,
+                                        "member_name": member.display_name,
+                                        "requester_id": reactor.id,
+                                        "requester_name": reactor.display_name,
+                                        "cleanup_source": message.id,
+                                        "created_at": time.time(),
+                                        "processed": False
+                                    }
+                                
+                                print(f"✅ Created individual review for {member.display_name} after retry")
+                            except Exception as retry_error:
+                                print(f"❌ Failed to create review for {member.display_name} after retry: {retry_error}")
+                        else:
+                            print(f"❌ Failed to create review for {member.display_name}: {e}")
+                    
+                    # Rate limiting between messages
+                    if i < len(members_to_process) - 1:
+                        await asyncio.sleep(1.5)  # Increased delay to avoid rate limits
         
         # Mark message as processed
-        weekly_cleanup_messages[message.id]["processed"] = True
+        with lock:
+            weekly_cleanup_messages[message.id]["processed"] = True
         
         # Remove the cleanup message after processing
         try:
@@ -1410,6 +1513,225 @@ async def handle_weekly_cleanup_reaction(payload, guild, reactor, message):
         log_error("WEEKLY_CLEANUP_HANDLER", e)
         if health_monitor:
             health_monitor.record_error("weekly_cleanup_error")
+
+# -----------------------
+# 🆕 FIXED: THREAD-SAFE INDIVIDUAL REVIEW REACTION HANDLER
+# -----------------------
+async def handle_individual_review_reaction(payload, guild, reactor, message):
+    """Handle reactions on individual review messages from weekly cleanup with thread safety"""
+    try:
+        emoji_str = str(payload.emoji)
+        
+        # Check admin permission
+        if not safety_wrappers or not safety_wrappers.is_admin(reactor):
+            try:
+                await message.remove_reaction(payload.emoji, reactor)
+            except:
+                pass
+            return
+        
+        # 🛡️ THREAD-SAFE LOCK: Prevent race conditions
+        lock = review_locks.setdefault(message.id, threading.Lock())
+        with lock:
+            # Check if this message is already processed
+            if message.id not in individual_review_messages or individual_review_messages[message.id].get("processed"):
+                return
+            
+            # Mark as processing
+            individual_review_messages[message.id]["processing"] = True
+            individual_review_messages[message.id]["processed_by"] = reactor.id
+            individual_review_messages[message.id]["processed_at"] = time.time()
+        
+        # Get member data
+        review_data = individual_review_messages[message.id]
+        member_id = review_data["member_id"]
+        member = guild.get_member(member_id)
+        
+        if not member:
+            print(f"⚠️ Member {member_id} not found in guild")
+            with lock:
+                individual_review_messages[message.id]["processed"] = True
+                individual_review_messages[message.id]["error"] = "Member not found"
+            return
+        
+        staff_ch = client.get_channel(CHANNELS["staff_review"])
+        result_text = ""
+        
+        # Process based on emoji
+        if emoji_str == UPVOTE_EMOJI:
+            # Grant role
+            success, result_msg = await safety_wrappers.assign_role_safe(
+                member,
+                ROLES["imperius"],
+                f"Weekly cleanup individual review - granted role by {reactor.display_name}"
+            )
+            
+            if success:
+                result_text = f"✅ **Granted role** to {member.mention} ({member.id})"
+                
+                # Update tracking
+                uid = str(member.id)
+                if uid in member_join_tracking:
+                    member_join_tracking[uid]["status"] = "approved_weekly_individual"
+                    member_join_tracking[uid]["has_roles"] = True
+                    member_join_tracking[uid]["last_checked"] = int(time.time())
+                    member_join_tracking[uid]["notes"].append(f"Granted role in individual weekly cleanup review by {reactor.display_name}")
+                    save_join_tracking(member_join_tracking)
+            else:
+                result_text = f"❌ **Failed to grant role** to {member.mention}: {result_msg}"
+        
+        elif emoji_str == DOWNVOTE_EMOJI:
+            # Kick member
+            success, result_msg = await safety_wrappers.kick_member_safe(
+                member,
+                f"Weekly cleanup individual review - kicked by {reactor.display_name}"
+            )
+            
+            if success:
+                result_text = f"✅ **Kicked** {member.mention} ({member.id})"
+                
+                # Update tracking
+                uid = str(member.id)
+                if uid in member_join_tracking:
+                    member_join_tracking[uid]["status"] = "kicked_weekly_individual"
+                    member_join_tracking[uid]["kicked_by"] = reactor.id
+                    member_join_tracking[uid]["kicked_at"] = int(time.time())
+                    member_join_tracking[uid]["notes"].append(f"Kicked in individual weekly cleanup review by {reactor.display_name}")
+                    save_join_tracking(member_join_tracking)
+            else:
+                result_text = f"❌ **Failed to kick** {member.mention}: {result_msg}"
+        
+        elif emoji_str == CLOCK_EMOJI:
+            # Conditional - no action, just track
+            result_text = f"⏰ **Conditional** - {member.mention} ({member.id}) will remain without role"
+            
+            # Update tracking
+            uid = str(member.id)
+            if uid in member_join_tracking:
+                member_join_tracking[uid]["status"] = "conditional_weekly"
+                member_join_tracking[uid]["last_checked"] = int(time.time())
+                member_join_tracking[uid]["notes"].append(f"Marked conditional in individual weekly cleanup review by {reactor.display_name}")
+                save_join_tracking(member_join_tracking)
+        else:
+            # Not a valid voting emoji
+            with lock:
+                individual_review_messages[message.id]["processing"] = False
+            return
+        
+        # Send result
+        if staff_ch:
+            result_embed = discord.Embed(
+                title="📊 Weekly Cleanup Individual Review Result",
+                description=f"**Member:** {member.mention} ({member.id})\n**Action:** {result_text}\n**Approved by:** {reactor.mention}",
+                color=discord.Color.blue(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            await staff_ch.send(embed=result_embed)
+        
+        # Mark as processed
+        with lock:
+            individual_review_messages[message.id]["processed"] = True
+            individual_review_messages[message.id]["result"] = result_text
+        
+        # Delete the review message
+        try:
+            await message.delete()
+        except:
+            pass
+        
+    except Exception as e:
+        log_error("INDIVIDUAL_REVIEW_HANDLER", e)
+        if health_monitor:
+            health_monitor.record_error("individual_review_error")
+
+# -----------------------
+# 🆕 AUTOMATED TRACKING CLEANUP
+# -----------------------
+async def cleanup_old_tracking():
+    """Clean up old tracking data periodically"""
+    await client.wait_until_ready()
+    
+    while not client.is_closed():
+        try:
+            await asyncio.sleep(3600)  # Run every hour
+            
+            current_time = time.time()
+            cleaned_count = 0
+            
+            # Clean individual reviews older than 24h
+            for msg_id in list(individual_review_messages.keys()):
+                try:
+                    data = individual_review_messages[msg_id]
+                    if current_time - data.get("created_at", 0) > 86400:  # 24 hours
+                        del individual_review_messages[msg_id]
+                        # Also remove the lock if it exists
+                        if msg_id in review_locks:
+                            del review_locks[msg_id]
+                        cleaned_count += 1
+                except Exception as e:
+                    print(f"⚠️ Error cleaning individual review {msg_id}: {e}")
+            
+            # Clean weekly cleanup messages older than 7 days
+            for msg_id in list(weekly_cleanup_messages.keys()):
+                try:
+                    data = weekly_cleanup_messages[msg_id]
+                    if current_time - data.get("created_at", 0) > 604800:  # 7 days
+                        del weekly_cleanup_messages[msg_id]
+                        # Also remove the lock if it exists
+                        if msg_id in cleanup_locks:
+                            del cleanup_locks[msg_id]
+                        cleaned_count += 1
+                except Exception as e:
+                    print(f"⚠️ Error cleaning weekly cleanup {msg_id}: {e}")
+            
+            if cleaned_count > 0:
+                print(f"🧹 Cleaned up {cleaned_count} old tracking entries")
+                
+        except Exception as e:
+            log_error("CLEANUP_TRACKING", e)
+            if health_monitor:
+                health_monitor.record_error("tracking_cleanup_error")
+
+# -----------------------
+# 🆕 ORPHANED REVIEW CHECKER
+# -----------------------
+async def check_orphaned_reviews():
+    """Find and clean up orphaned review messages"""
+    await client.wait_until_ready()
+    
+    while not client.is_closed():
+        try:
+            await asyncio.sleep(7200)  # Check every 2 hours
+            
+            staff_ch = client.get_channel(CHANNELS["staff_review"])
+            if not staff_ch:
+                continue
+            
+            print(f"🔍 Checking for orphaned review messages...")
+            orphaned_count = 0
+            
+            # Check recent messages in staff channel
+            async for message in staff_ch.history(limit=50):
+                if message.author.id == client.user.id and message.embeds:
+                    embed = message.embeds[0]
+                    if embed.title and "Weekly Cleanup Review - Member" in embed.title:
+                        # Check if we're tracking this message
+                        if message.id not in individual_review_messages:
+                            # Orphaned message found
+                            print(f"🧹 Found orphaned review message {message.id}")
+                            try:
+                                await message.delete()
+                                orphaned_count += 1
+                            except Exception as e:
+                                print(f"⚠️ Failed to delete orphaned message {message.id}: {e}")
+            
+            if orphaned_count > 0:
+                print(f"✅ Cleaned up {orphaned_count} orphaned review messages")
+                
+        except Exception as e:
+            log_error("ORPHAN_CHECK", e)
+            if health_monitor:
+                health_monitor.record_error("orphan_check_error")
 
 # -----------------------
 # SAFE INACTIVITY CHECKER
@@ -1725,6 +2047,8 @@ async def on_ready():
         # Start background tasks
         client.loop.create_task(safe_inactivity_checker())
         client.loop.create_task(weekly_role_checker())
+        client.loop.create_task(cleanup_old_tracking())  # 🆕 Added tracking cleanup
+        client.loop.create_task(check_orphaned_reviews())  # 🆕 Added orphan check
         print(f"🔄 Background tasks started")
         
         # Set bot status
