@@ -1,6 +1,7 @@
 """
 Button Views for Discord Bot
 Handles all button interactions for the cleanup system
+WITH STABILITY FIXES
 """
 
 import discord
@@ -9,7 +10,7 @@ import asyncio
 from datetime import datetime
 
 class BaseAdminView(View):
-    """Base view for admin actions with rate limiting"""
+    """Base view for admin actions with rate limiting and stability"""
     
     def __init__(self, member: discord.Member, cleanup_system, timeout=86400):  # 24 hours
         super().__init__(timeout=timeout)
@@ -18,12 +19,26 @@ class BaseAdminView(View):
         self.voted_admins = set()
         self.vote_lock = asyncio.Lock()  # Prevent race conditions
         
+        # Stability tracking
+        self.created_at = datetime.now()
+        self.interaction_count = 0
+        
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Check if user can interact"""
+        """Check if user can interact with stability checks"""
+        self.interaction_count += 1
+        
         # Check if view is already expired
         if self.is_finished():
             await interaction.response.send_message(
                 "❌ This action has expired. Please run cleanup check again.",
+                ephemeral=True
+            )
+            return False
+        
+        # Rate limit: max 10 interactions per view
+        if self.interaction_count > 10:
+            await interaction.response.send_message(
+                "❌ Too many interactions on this view. Please use a new one.",
                 ephemeral=True
             )
             return False
@@ -37,6 +52,19 @@ class BaseAdminView(View):
             return False
         
         return True
+    
+    async def on_timeout(self):
+        """Handle view timeout gracefully"""
+        try:
+            # Disable all buttons on timeout
+            for child in self.children:
+                child.disabled = True
+            
+            # Try to update if we have a message reference
+            if hasattr(self, '_message'):
+                await self._message.edit(view=self)
+        except:
+            pass
 
 class GhostUserView(BaseAdminView):
     """View for handling ghost users"""
@@ -70,7 +98,15 @@ class GhostUserView(BaseAdminView):
                 # Disable all buttons
                 for child in self.children:
                     child.disabled = True
-                await interaction.message.edit(view=self)
+                
+                # Store message reference for timeout handling
+                self._message = interaction.message
+                
+                # Update message
+                try:
+                    await interaction.message.edit(view=self)
+                except:
+                    pass
                 
                 await interaction.followup.send(
                     f"✅ {message}",
@@ -83,7 +119,7 @@ class GhostUserView(BaseAdminView):
                 )
 
 class DemotionReviewView(BaseAdminView):
-    """View for demotion review voting"""
+    """View for demotion review voting with stability fixes"""
     
     def __init__(self, member: discord.Member, cleanup_system):
         super().__init__(member, cleanup_system, timeout=86400)
@@ -142,7 +178,12 @@ class DemotionReviewView(BaseAdminView):
                     # Disable all buttons
                     for child in self.children:
                         child.disabled = True
-                    await interaction.message.edit(view=self)
+                    
+                    self._message = interaction.message
+                    try:
+                        await interaction.message.edit(view=self)
+                    except:
+                        pass
             else:
                 # Keep role
                 await self.cleanup_system._log_admin_action(
@@ -154,75 +195,78 @@ class DemotionReviewView(BaseAdminView):
                 # Disable all buttons
                 for child in self.children:
                     child.disabled = True
-                await interaction.message.edit(view=self)
+                
+                self._message = interaction.message
+                try:
+                    await interaction.message.edit(view=self)
+                except:
+                    pass
 
 class ReturnReviewView(BaseAdminView):
     """View for returning user review"""
     
     def __init__(self, member: discord.Member, cleanup_system):
-        super().__init__(member, cleanup_system, timeout=86400)  # 24 hours
-        
-        # Add user info to view
+        super().__init__(member, cleanup_system, timeout=86400)
         self.days_inactive = cleanup_system.get_inactivity_days(member.id)
         self.server_name = member.guild.name
     
     @discord.ui.button(label="Promote", style=discord.ButtonStyle.success, emoji="⬆️", custom_id="promote_user")
     async def promote_button(self, interaction: discord.Interaction, button: Button):
         async with self.vote_lock:
-            await interaction.response.defer(thinking=True)
-            
-            # Log who is taking action
-            print(f"👑 {interaction.user.display_name} promoting {self.member.display_name}")
-            
-            success, message = await self.cleanup_system.promote_user(
-                self.member, 
-                interaction.user
-            )
-            
-            if success:
-                # Update activity tracking (user is now active)
-                await self.cleanup_system.track_user_activity(self.member.id, "promoted_back")
-                
-                # Disable all buttons
-                for child in self.children:
-                    child.disabled = True
-                await interaction.message.edit(view=self)
-            
-            await interaction.followup.send(
-                f"{'✅' if success else '❌'} {message}",
-                ephemeral=True
-            )
+            await self._handle_promote(interaction)
     
     @discord.ui.button(label="Review", style=discord.ButtonStyle.secondary, emoji="🔍", custom_id="review_user")
     async def review_button(self, interaction: discord.Interaction, button: Button):
         async with self.vote_lock:
-            await interaction.response.defer(thinking=True)
+            await self._handle_review(interaction)
+    
+    async def _handle_promote(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        
+        # Log who is taking action
+        print(f"👑 {interaction.user.display_name} promoting {self.member.display_name}")
+        
+        success, message = await self.cleanup_system.promote_user(
+            self.member, 
+            interaction.user
+        )
+        
+        if success:
+            # Update activity tracking (user is now active)
+            await self.cleanup_system.track_user_activity(self.member.id, "promoted_back")
             
-            print(f"🔍 {interaction.user.display_name} putting {self.member.display_name} under review")
-            
-            # Put user under review
-            await self.cleanup_system.put_user_under_review(self.member)
-            
-            # Disable buttons
+            # Disable all buttons
             for child in self.children:
                 child.disabled = True
-            await interaction.message.edit(view=self)
             
-            await interaction.followup.send(
-                f"✅ User {self.member.display_name} has been put under review.",
-                ephemeral=True
-            )
+            self._message = interaction.message
+            try:
+                await interaction.message.edit(view=self)
+            except:
+                pass
+        
+        await interaction.followup.send(
+            f"{'✅' if success else '❌'} {message}",
+            ephemeral=True
+        )
     
     async def _handle_review(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True)
         
+        print(f"🔍 {interaction.user.display_name} putting {self.member.display_name} under review")
+        
         # Put user under review
         await self.cleanup_system.put_user_under_review(self.member)
         
-        # Disable all buttons
+        # Disable buttons
         for child in self.children:
             child.disabled = True
-        await interaction.message.edit(view=self)
+        
+        self._message = interaction.message
+        try:
+            await interaction.message.edit(view=self)
+        except:
+            pass
         
         await interaction.followup.send(
             f"✅ User {self.member.display_name} has been put under review.",
@@ -230,7 +274,7 @@ class ReturnReviewView(BaseAdminView):
         )
 
 class FinalReviewView(BaseAdminView):
-    """View for final review voting"""
+    """View for final review voting with stability fixes"""
     
     def __init__(self, member: discord.Member, cleanup_system):
         super().__init__(member, cleanup_system, timeout=86400)
@@ -294,7 +338,12 @@ class FinalReviewView(BaseAdminView):
                     # Disable all buttons
                     for child in self.children:
                         child.disabled = True
-                    await interaction.message.edit(view=self)
+                    
+                    self._message = interaction.message
+                    try:
+                        await interaction.message.edit(view=self)
+                    except:
+                        pass
             else:
                 # Kick user
                 success, message = await self.cleanup_system.kick_user(
@@ -306,4 +355,9 @@ class FinalReviewView(BaseAdminView):
                     # Disable all buttons
                     for child in self.children:
                         child.disabled = True
-                    await interaction.message.edit(view=self)
+                    
+                    self._message = interaction.message
+                    try:
+                        await interaction.message.edit(view=self)
+                    except:
+                        pass
