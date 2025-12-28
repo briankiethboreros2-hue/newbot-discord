@@ -237,6 +237,7 @@ class FinalReviewView(BaseAdminView):
         self.promote_votes = set()
         self.kick_votes = set()
         self.votes_needed = 2
+        self.days_inactive = cleanup_system.get_inactivity_days(member.id)
     
     @discord.ui.button(label="Promote", style=discord.ButtonStyle.success, emoji="⬆️", custom_id="final_promote")
     async def promote_button(self, interaction: discord.Interaction, button: Button):
@@ -262,8 +263,12 @@ class FinalReviewView(BaseAdminView):
         # Add to new vote category
         if vote_type == "promote":
             self.promote_votes.add(voter_id)
+            action = "voted to PROMOTE"
         else:
             self.kick_votes.add(voter_id)
+            action = "voted to KICK"
+        
+        print(f"🗳️ {interaction.user.display_name} {action} {self.member.display_name}")
         
         total_votes = len(self.promote_votes) + len(self.kick_votes)
         
