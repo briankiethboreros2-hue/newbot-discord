@@ -84,12 +84,12 @@ sys.excepthook = global_error_handler
 CHANNELS = {
     "main": 1437768842871832597,
     "recruit": 1437568595977834590,
-    "reminder": 1369091668724154419,
-    "staff_review": 1437586858417852438,
-    "cleanup": 1454802873300025396,      # NEW: Cleanup channel
-    "admin": 1437586858417852438,        # Admin channel
-    "welcome": 1369091668724154419,      # Welcome channel (same as reminder)
-    "call": 1437575744824934531          # Call channel
+    "reminder": 1369091668724154419,      # Also used as welcome channel
+    "staff_review": 1437586858417852438,  # Also used as admin channel
+    "cleanup": 1454802873300025396,       # Cleanup channel (for ghost users)
+    "admin": 1437586858417852438,         # Same as staff_review
+    "welcome": 1369091668724154419,       # Same as reminder
+    "call": 1437575744824934531           # Call channel for demoted users
 }
 
 ROLES = {
