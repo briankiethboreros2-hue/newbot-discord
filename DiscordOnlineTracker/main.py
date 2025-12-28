@@ -1,4 +1,4 @@
-# STABLE VERSION - BOT IN MAIN THREAD WITH MODULAR SYSTEM
+# STABLE VERSION - BOT IN MAIN THREAD WITH ALL STABILITY FIXES
 import threading
 import discord
 import os
@@ -9,6 +9,7 @@ import sys
 import traceback
 import random
 import re
+import signal
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
@@ -21,45 +22,45 @@ try:
     print("✅ Successfully loaded modules")
 except ImportError as e:
     print(f"❌ Error importing modules: {e}")
-    print("📁 Make sure you have the modules folder with:")
-    print("   - cleanup_system.py")
-    print("   - poll_voting.py")
-    print("   - button_views.py")
+    print("📁 Make sure you have the modules folder with required files")
     sys.exit(1)
 
 # -----------------------
-# 🛡️ SAFETY CONFIGURATION
+# 🛡️ STABILITY CONFIGURATION
 # -----------------------
 CLEANUP_ENABLED = True
-CLEANUP_RATE_LIMIT = 1.0
 MAX_CLEANUP_RETRIES = 3
 SAVE_RETRY_COUNT = 3
 
-# Retention policies
-TRACKING_RETENTION_DAYS = 30
-JOIN_COOLDOWN_CLEANUP_HOURS = 24
-ERROR_LOG_RETENTION_DAYS = 7
+# Global shutdown flag
+shutdown_flag = False
+
+def handle_shutdown(signum, frame):
+    """Handle graceful shutdown"""
+    global shutdown_flag
+    print(f"\n🛑 Received shutdown signal ({signum}), saving data...")
+    shutdown_flag = True
+
+# Register signal handlers
+signal.signal(signal.SIGINT, handle_shutdown)
+signal.signal(signal.SIGTERM, handle_shutdown)
 
 # -----------------------
 # ENHANCED ERROR HANDLING
 # -----------------------
 def log_error(where, error):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    error_msg = f"💥 [{timestamp}] CRASH in {where}: {str(error)}"
+    error_msg = f"💥 [{timestamp}] ERROR in {where}: {str(error)}"
     print(error_msg)
     
-    # Rotate error log if too large
+    # Log to file with rotation
     try:
-        if os.path.exists("bot_errors.log"):
-            file_size = os.path.getsize("bot_errors.log")
-            if file_size > 10 * 1024 * 1024:
-                rotate_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-                os.rename("bot_errors.log", f"bot_errors_{rotate_time}.log")
-    except:
-        pass
-    
-    try:
-        with open("bot_errors.log", "a") as f:
+        log_file = "bot_errors.log"
+        if os.path.exists(log_file) and os.path.getsize(log_file) > 10 * 1024 * 1024:
+            rotate_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+            os.rename(log_file, f"bot_errors_{rotate_time}.log")
+        
+        with open(log_file, "a") as f:
             f.write(error_msg + "\n")
             traceback.print_exc(file=f)
             f.write("-" * 50 + "\n")
@@ -79,31 +80,31 @@ def global_error_handler(exc_type, exc_value, exc_traceback):
 sys.excepthook = global_error_handler
 
 # -----------------------
-# CONFIG - UPDATED WITH NEW CHANNELS/ROLES
+# CONFIGURATION
 # -----------------------
 CHANNELS = {
     "main": 1437768842871832597,
     "recruit": 1437568595977834590,
-    "reminder": 1369091668724154419,      # Also used as welcome channel
-    "staff_review": 1437586858417852438,  # Also used as admin channel
-    "cleanup": 1454802873300025396,       # Cleanup channel (for ghost users)
-    "admin": 1437586858417852438,         # Same as staff_review
-    "welcome": 1369091668724154419,       # Same as reminder
-    "call": 1437575744824934531           # Call channel for demoted users
+    "reminder": 1369091668724154419,
+    "staff_review": 1437586858417852438,
+    "cleanup": 1454802873300025396,
+    "admin": 1437586858417852438,
+    "welcome": 1369091668724154419,
+    "call": 1437575744824934531
 }
 
 ROLES = {
     "queen": 1437578521374363769,
     "clan_master": 1389835747040694332,
     "og_imperius": 1437572916005834793,
-    "imperius": 1437570031822176408,     # Impèrius🔥 role ID
-    "demoted": 1454803208995340328       # NEW: Demoted role ID
+    "imperius": 1437570031822176408,
+    "demoted": 1454803208995340328
 }
 
 ADMIN_ROLES = [
     1389835747040694332,  # clan_master
     1437578521374363769,  # queen
-    1437572916005834793,  # og_imperius (FIXED: was missing the last digit)
+    1437572916005834793,  # og_imperius
     1438420490455613540   # Additional admin role
 ]
 
@@ -119,7 +120,7 @@ STATE_FILE = "reminder_state.json"
 PENDING_FILE = "pending_recruits.json"
 JOIN_TRACKING_FILE = "member_join_tracking.json"
 
-# UPDATED RECRUITMENT QUESTIONS
+# Recruitment questions
 RECRUIT_QUESTIONS = [
     "1️⃣ Since you agreed to our terms and have read the rules, that also states we conduct clan tryouts. Do you agree to participate? (yes or no)",
     "2️⃣ We require CCN 1 week after the day you joined or got accepted, failed to comply with the requirements might face with penalty, What will be your future in-game name? (e.g., IM-Ryze)",
@@ -128,15 +129,8 @@ RECRUIT_QUESTIONS = [
     "5️⃣ We understand that sometimes there will be busy days and other priorities, we do have members who are working and also studying, are you working or a student?"
 ]
 
-# Voting emojis
 UPVOTE_EMOJI = "👍🏻"
 DOWNVOTE_EMOJI = "👎🏻"
-CLOCK_EMOJI = "⏰"
-
-# 🆕 WEEKLY CLEANUP EMOJIS
-KICK_EMOJI = "🦶"
-GRANT_ROLE_EMOJI = "👑"
-REVIEW_EMOJI = "🔍"
 
 REMINDERS = [
     {"title": "🟢 Activity Reminder", "description": "Members must keep their status set only to \"Online\" while active."},
@@ -145,16 +139,16 @@ REMINDERS = [
 ]
 
 # -----------------------
-# 🛡️ ADVANCED SAFETY WRAPPERS
+# 🛡️ ENHANCED SAFETY WRAPPERS
 # -----------------------
 class CircuitBreaker:
-    """Circuit breaker pattern for rate-limited operations"""
+    """Circuit breaker for rate-limited operations"""
     def __init__(self, failure_threshold=5, reset_timeout=60):
         self.failure_threshold = failure_threshold
         self.reset_timeout = reset_timeout
         self.failures = 0
         self.last_failure_time = 0
-        self.state = "CLOSED" # CLOSED, OPEN, HALF_OPEN
+        self.state = "CLOSED"
     
     def can_execute(self):
         if self.state == "OPEN":
@@ -179,16 +173,39 @@ class SafetyWrappers:
     def __init__(self, client):
         self.client = client
         self.last_kick_time = 0
-        self.kick_cooldown = 2.0 # Seconds between kicks
+        self.kick_cooldown = 2.0
         self.last_role_assignment = 0
-        self.role_cooldown = 1.0 # Seconds between role assignments
+        self.role_cooldown = 1.0
         
         self.kick_circuit = CircuitBreaker(failure_threshold=3, reset_timeout=30)
         self.role_circuit = CircuitBreaker(failure_threshold=5, reset_timeout=30)
         
-        # Track operations in progress to avoid double-processing
+        # API rate limiting
+        self.api_calls = []
+        self.max_api_calls = 45  # Stay under Discord's 50/5 second limit
+        self.api_window = 5  # seconds
+        
+        # Operations tracking
         self.in_progress_operations = {}
         
+    async def check_rate_limit(self):
+        """Check and enforce Discord API rate limits"""
+        current_time = time.time()
+        
+        # Remove calls older than our window
+        self.api_calls = [t for t in self.api_calls if current_time - t < self.api_window]
+        
+        # If we're approaching the limit, wait
+        if len(self.api_calls) >= self.max_api_calls:
+            oldest_call = self.api_calls[0]
+            wait_time = self.api_window - (current_time - oldest_call)
+            if wait_time > 0:
+                print(f"⏱️ Rate limit approaching, waiting {wait_time:.1f}s")
+                await asyncio.sleep(wait_time)
+        
+        # Record this call
+        self.api_calls.append(current_time)
+    
     async def assign_role_safe(self, member, role_id, reason=""):
         operation_key = f"role_{member.id}_{role_id}"
         if operation_key in self.in_progress_operations:
@@ -197,13 +214,16 @@ class SafetyWrappers:
         self.in_progress_operations[operation_key] = True
         
         try:
+            # Check rate limits
+            await self.check_rate_limit()
+            
             if not self.role_circuit.can_execute():
                 return False, "Circuit breaker open - too many failures"
                 
             if not member or not role_id:
                 return False, "Invalid parameters"
             
-            # Check rate limiting
+            # Rate limiting between operations
             current_time = time.time()
             if current_time - self.last_role_assignment < self.role_cooldown:
                 await asyncio.sleep(self.role_cooldown)
@@ -219,7 +239,7 @@ class SafetyWrappers:
                 self.role_circuit.record_success()
                 return True, "Already has role"
                 
-            # Permission check
+            # Permission checks
             bot_member = guild.get_member(self.client.user.id)
             if not bot_member.guild_permissions.manage_roles:
                 self.role_circuit.record_failure()
@@ -239,11 +259,10 @@ class SafetyWrappers:
             return False, "Bot lacks permissions (403 Forbidden)"
         except discord.HTTPException as e:
             self.role_circuit.record_failure()
-            if e.status == 429: # Rate limit
-                print(f"🛑 Discord Rate Limit hit on role assignment! Waiting...")
+            if e.status == 429:
+                print(f"🛑 Discord Rate Limit hit! Waiting...")
                 wait_time = random.uniform(5, 10)
                 await asyncio.sleep(wait_time)
-                # One retry
                 try:
                     await member.add_roles(role, reason=reason)
                     self.role_circuit.record_success()
@@ -267,10 +286,13 @@ class SafetyWrappers:
         self.in_progress_operations[operation_key] = True
         
         try:
+            # Check rate limits
+            await self.check_rate_limit()
+            
             if not self.kick_circuit.can_execute():
                 return False, "Circuit breaker open - too many failures"
                 
-            # Check rate limiting
+            # Rate limiting
             current_time = time.time()
             if current_time - self.last_kick_time < self.kick_cooldown:
                 await asyncio.sleep(self.kick_cooldown)
@@ -300,7 +322,8 @@ class SafetyWrappers:
                 del self.in_progress_operations[operation_key]
 
     def is_admin(self, member):
-        if not member: return False
+        if not member: 
+            return False
         member_role_ids = [r.id for r in member.roles]
         return any(role_id in ADMIN_ROLES for role_id in member_role_ids)
 
@@ -323,7 +346,7 @@ cleanup_system = None
 poll_voting = None
 
 # -----------------------
-# STATE & PERSISTENCE
+# STATE & PERSISTENCE WITH STABILITY
 # -----------------------
 state = {"message_counter": 0, "current_reminder": 0}
 pending_recruits = {}
@@ -331,7 +354,7 @@ recent_joins = {}
 presence_cooldown = {}
 member_join_tracking = {}
 
-PRESENCE_COOLDOWN_TIME = 300 # 5 minutes
+PRESENCE_COOLDOWN_TIME = 300
 
 class AtomicJSONManager:
     @staticmethod
@@ -350,15 +373,45 @@ class AtomicJSONManager:
         for i in range(SAVE_RETRY_COUNT):
             try:
                 temp_file = path + ".tmp"
+                backup_file = path + f".backup.{int(time.time())}"
+                
+                # Create backup first
+                if os.path.exists(path):
+                    import shutil
+                    shutil.copy2(path, backup_file)
+                
+                # Save to temp file
                 with open(temp_file, "w") as f:
-                    json.dump(data, f, indent=2)
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                
+                # Verify JSON is valid
+                with open(temp_file, "r") as f:
+                    json.load(f)
+                
                 # Atomic replace
                 os.replace(temp_file, path)
+                
+                # Clean up old backups
+                AtomicJSONManager._cleanup_old_backups(path)
+                
                 return True
             except Exception as e:
                 log_error(f"SAVE_{path}_TRY_{i}", e)
                 time.sleep(1)
         return False
+    
+    @staticmethod
+    def _cleanup_old_backups(base_path):
+        import glob
+        backups = glob.glob(f"{base_path}.backup.*")
+        backups.sort(key=os.path.getmtime)
+        
+        # Keep only last 5 backups
+        for backup in backups[:-5]:
+            try:
+                os.remove(backup)
+            except:
+                pass
 
 json_manager = AtomicJSONManager()
 
@@ -373,13 +426,11 @@ def load_data():
     print(f"📂 Data loaded: {len(pending_recruits)} recruits, {len(member_join_tracking)} tracked members")
 
 def save_data():
-    json_manager.atomic_save(STATE_FILE, state)
-    json_manager.atomic_save(PENDING_FILE, pending_recruits)
-    json_manager.atomic_save(JOIN_TRACKING_FILE, member_join_tracking)
+    success1 = json_manager.atomic_save(STATE_FILE, state)
+    success2 = json_manager.atomic_save(PENDING_FILE, pending_recruits)
+    success3 = json_manager.atomic_save(JOIN_TRACKING_FILE, member_join_tracking)
+    return success1 and success2 and success3
 
-# -----------------------
-# TRACKING HELPERS
-# -----------------------
 def update_member_tracking(member, status):
     uid = str(member.id)
     now = datetime.now(timezone.utc).isoformat()
@@ -399,22 +450,20 @@ def update_member_tracking(member, status):
     # Limit events history
     if len(member_join_tracking[uid]["events"]) > 20:
         member_join_tracking[uid]["events"] = member_join_tracking[uid]["events"][-20:]
-    
-    save_data()
 
 # -----------------------
-# BACKGROUND TASKS
+# BACKGROUND TASKS WITH STABILITY
 # -----------------------
 async def cleanup_background_task():
-    """Background task for cleanup system"""
+    """Background task for cleanup system with stability"""
     await client.wait_until_ready()
     
     print("🔄 Starting cleanup background task...")
     
-    # Initial delay to let everything load
+    # Initial delay
     await asyncio.sleep(10)
     
-    while not client.is_closed():
+    while not client.is_closed() and not shutdown_flag:
         try:
             if cleanup_system and CLEANUP_ENABLED:
                 # Run cleanup every 6 hours
@@ -425,19 +474,48 @@ async def cleanup_background_task():
                 if datetime.now().hour == 3:
                     await cleanup_system.cleanup_old_data()
             
-            # Check for expired polls
-            if poll_voting:
+            # Check for expired polls if using poll system
+            if poll_voting and hasattr(poll_voting, 'cleanup_expired_polls'):
                 await poll_voting.cleanup_expired_polls()
             
             # Sleep for 6 hours
-            await asyncio.sleep(6 * 3600)
+            for _ in range(6 * 60):  # Check every minute for shutdown
+                if shutdown_flag:
+                    break
+                await asyncio.sleep(60)
             
         except Exception as e:
             log_error("cleanup_background_task", e)
-            await asyncio.sleep(300)  # Wait 5 minutes on error
+            await asyncio.sleep(300)
+
+async def resource_monitor():
+    """Monitor resource usage"""
+    await client.wait_until_ready()
+    
+    while not client.is_closed() and not shutdown_flag:
+        try:
+            import psutil
+            process = psutil.Process(os.getpid())
+            memory_mb = process.memory_info().rss / 1024 / 1024
+            
+            if memory_mb > 400:  # Warning at 400MB
+                print(f"⚠️ High memory usage: {memory_mb:.1f}MB")
+                
+                # Try to clear some caches
+                if cleanup_system:
+                    cleanup_system.cleanup_old_views()
+            
+            await asyncio.sleep(300)  # Check every 5 minutes
+            
+        except ImportError:
+            # psutil not available
+            break
+        except Exception as e:
+            print(f"⚠️ Resource monitor error: {e}")
+            await asyncio.sleep(300)
 
 # -----------------------
-# BOT EVENTS - UPDATED WITH MODULES
+# BOT EVENTS
 # -----------------------
 @client.event
 async def on_ready():
@@ -446,6 +524,7 @@ async def on_ready():
     
     for guild in client.guilds:
         print(f"  - {guild.name} (ID: {guild.id})")
+        print(f"    Members: {guild.member_count}")
     
     load_data()
     
@@ -462,36 +541,39 @@ async def on_ready():
     
     # Start background tasks
     asyncio.create_task(cleanup_background_task())
+    asyncio.create_task(resource_monitor())
     
-    print("--- Bot is ready with modular system ---")
+    print("--- Bot is ready with stability fixes ---")
     print("Commands available:")
     print("  !stats - Show bot statistics")
     print("  !cleanup - Run manual cleanup check")
-    print("  !poll \"Question?\" \"Option 1\" \"Option 2\" - Create a poll")
 
 @client.event
 async def on_member_join(member):
+    if shutdown_flag:
+        return
+    
     uid = str(member.id)
     current_time = time.time()
     
     # Anti-spam join protection
-    if uid in recent_joins:
-        if current_time - recent_joins[uid] < 60:
-            print(f"⚠️ Rapid rejoin detected for {member.display_name}")
-            return
-    recent_joins[uid] = current_time
+    if uid in recent_joins and current_time - recent_joins[uid] < 60:
+        print(f"⚠️ Rapid rejoin detected for {member.display_name}")
+        return
     
+    recent_joins[uid] = current_time
     print(f"👤 Member joined: {member.display_name} (ID: {member.id})")
+    
     update_member_tracking(member, "joined")
     
-    # Track activity in cleanup system
+    # Track activity
     if cleanup_system:
         await cleanup_system.track_user_activity(member.id, "joined")
     
     recruit_ch = client.get_channel(CHANNELS["recruit"])
     staff_ch = client.get_channel(CHANNELS["staff_review"])
     
-    # Reset/Init recruit state
+    # Initialize recruit state
     pending_recruits[uid] = {
         "started": int(current_time),
         "answers": [],
@@ -501,7 +583,6 @@ async def on_member_join(member):
     }
     save_data()
 
-    # Step 1: Send DM flow
     try:
         dm = await member.create_dm()
         await dm.send("👋 Welcome to **Impèrius🔥**! To join our ranks, please answer these recruitment questions.")
@@ -518,7 +599,6 @@ async def on_member_join(member):
                 save_data()
             except asyncio.TimeoutError:
                 await dm.send("⏳ Recruitment timed out. Please rejoin and try again.")
-                # Clean up pending recruit
                 if uid in pending_recruits:
                     del pending_recruits[uid]
                     save_data()
@@ -526,11 +606,10 @@ async def on_member_join(member):
 
         await dm.send("✅ Thank you! Your application has been sent to our Staff. Please wait for review.")
         
-        # Step 2: Post to Staff Review
         if staff_ch:
             embed = discord.Embed(
                 title="📋 New Recruit Application",
-                description=f"**Applicant:** {member.mention}\n**ID:** `{member.id}`\n**Joined:** <t:{int(member.joined_at.timestamp())}:R>",
+                description=f"**Applicant:** {member.mention}\n**ID:** `{member.id}`",
                 color=discord.Color.blue()
             )
             for i, ans in enumerate(pending_recruits[uid]["answers"]):
@@ -548,23 +627,21 @@ async def on_member_join(member):
             save_data()
 
     except discord.Forbidden:
-        print(f"❌ Could not DM {member.display_name} (DMs closed)")
+        print(f"❌ Could not DM {member.display_name}")
         if recruit_ch:
-            await recruit_ch.send(f"❌ {member.mention}, I couldn't DM you! Please open your DMs and rejoin to apply.")
-        # Clean up pending recruit
+            await recruit_ch.send(f"❌ {member.mention}, I couldn't DM you! Please open your DMs.")
         if uid in pending_recruits:
             del pending_recruits[uid]
             save_data()
     except Exception as e:
         log_error("on_member_join", e)
-        # Clean up on error
         if uid in pending_recruits:
             del pending_recruits[uid]
             save_data()
 
 @client.event
 async def on_raw_reaction_add(payload):
-    if payload.user_id == client.user.id:
+    if shutdown_flag or payload.user_id == client.user.id:
         return
 
     guild = client.get_guild(payload.guild_id)
@@ -575,7 +652,7 @@ async def on_raw_reaction_add(payload):
     if not reactor:
         return
 
-    # 1. Handle Recruitment Voting (admin only)
+    # Handle Recruitment Voting
     if safety_wrappers.is_admin(reactor):
         for uid, entry in list(pending_recruits.items()):
             if entry.get("review_message_id") == payload.message_id and not entry.get("resolved"):
@@ -583,7 +660,6 @@ async def on_raw_reaction_add(payload):
                 staff_ch = client.get_channel(CHANNELS["staff_review"])
                 
                 if str(payload.emoji) == UPVOTE_EMOJI:
-                    # Accept
                     success, msg = await safety_wrappers.assign_role_safe(
                         applicant, 
                         ROLES["imperius"], 
@@ -603,7 +679,6 @@ async def on_raw_reaction_add(payload):
                             pass
                 
                 elif str(payload.emoji) == DOWNVOTE_EMOJI:
-                    # Reject
                     success, msg = await safety_wrappers.kick_member_safe(
                         applicant, 
                         reason=f"Rejected by {reactor.display_name}"
@@ -619,40 +694,39 @@ async def on_raw_reaction_add(payload):
                 
                 save_data()
                 break
-    
-    # 2. Handle poll reactions if using poll system
-    if poll_voting:
-        await poll_voting.handle_reaction(payload)
 
 @client.event
 async def on_presence_update(before, after):
-    if after.bot: 
+    if shutdown_flag or after.bot: 
         return
     
-    # Track activity in cleanup system
+    # Track activity
     if cleanup_system:
         await cleanup_system.track_user_activity(after.id, "presence_update")
     
-    # Check if user returned from being offline (for demoted users)
-    if before.status in [discord.Status.offline, discord.Status.invisible] and after.status == discord.Status.online:
-        if cleanup_system:
+    # Check if user returned from being offline
+    if (before.status in [discord.Status.offline, discord.Status.invisible] and 
+        after.status == discord.Status.online):
+        
+        # Check if user has demoted role
+        demoted_role = after.guild.get_role(ROLES["demoted"])
+        if demoted_role and demoted_role in after.roles:
             await cleanup_system.handle_user_return(after)
     
-    # Check for non-Online status while active
+    # Track going offline
     if str(after.status) in ["offline", "invisible"]:
-        # Track going offline
         presence_cooldown[str(after.id)] = time.time()
 
 @client.event
 async def on_message(message):
-    if message.author.bot: 
+    if shutdown_flag or message.author.bot: 
         return
     
-    # Track activity in cleanup system
+    # Track activity
     if cleanup_system:
         await cleanup_system.track_user_activity(message.author.id, "message")
     
-    # Global Admin Commands
+    # Admin Commands
     if safety_wrappers.is_admin(message.author):
         if message.content.lower().startswith("!stats"):
             embed = discord.Embed(
@@ -661,13 +735,11 @@ async def on_message(message):
                 timestamp=datetime.now()
             )
             
-            # Active recruits
             active_recruits = len([r for r in pending_recruits.values() if not r.get('resolved')])
-            total_recruits = len(pending_recruits)
             
             embed.add_field(
                 name="Recruitment",
-                value=f"Active: {active_recruits}\nTotal: {total_recruits}",
+                value=f"Active: {active_recruits}\nTotal: {len(pending_recruits)}",
                 inline=True
             )
             
@@ -681,12 +753,10 @@ async def on_message(message):
                 embed.add_field(
                     name="Cleanup System",
                     value=f"Users: {len(cleanup_system.user_activity)}\n"
-                          f"Demoted: {len(cleanup_system.demoted_users)}\n"
-                          f"Under Review: {len(cleanup_system.users_under_review)}",
+                          f"Demoted: {len(cleanup_system.demoted_users)}",
                     inline=False
                 )
             
-            embed.set_footer(text=f"Server: {message.guild.name}")
             await message.channel.send(embed=embed)
             return
             
@@ -699,62 +769,8 @@ async def on_message(message):
             else:
                 await message.channel.send("❌ Cleanup system not initialized")
             return
-            
-        if message.content.lower().startswith("!poll"):
-            # Example: !poll "Question?" "Option 1" "Option 2" "Option 3"
-            if poll_voting:
-                try:
-                    # Parse command: !poll "Question?" "Option 1" "Option 2"
-                    content = message.content[len("!poll"):].strip()
-                    
-                    # Find quoted parts
-                    import shlex
-                    try:
-                        parts = shlex.split(content)
-                    except:
-                        # Fallback if shlex fails
-                        parts = []
-                        in_quote = False
-                        current = ""
-                        for char in content:
-                            if char == '"':
-                                if in_quote and current:
-                                    parts.append(current)
-                                    current = ""
-                                in_quote = not in_quote
-                            elif in_quote:
-                                current += char
-                    
-                    if len(parts) >= 3:
-                        question = parts[0]
-                        options = parts[1:]
-                        
-                        if len(options) >= 2 and len(options) <= 10:
-                            poll_msg = await poll_voting.create_poll(
-                                message.channel,
-                                question,
-                                options,
-                                duration_minutes=60,
-                                allowed_voters=ADMIN_ROLES
-                            )
-                            if poll_msg:
-                                await message.channel.send(f"✅ Poll created! {poll_msg.jump_url}")
-                            else:
-                                await message.channel.send("❌ Failed to create poll")
-                        else:
-                            await message.channel.send("❌ Poll needs 2-10 options!")
-                    else:
-                        await message.channel.send(
-                            "❌ Usage: `!poll \"Question?\" \"Option 1\" \"Option 2\"`\n"
-                            "Example: `!poll \"Best game?\" \"Valorant\" \"MLBB\" \"COD\"`"
-                        )
-                except Exception as e:
-                    await message.channel.send(f"❌ Error creating poll: {str(e)[:100]}")
-            else:
-                await message.channel.send("❌ Poll system not initialized")
-            return
 
-    # Counter-based Reminders (only in main channel)
+    # Counter-based Reminders
     if message.channel.id == CHANNELS["main"]:
         state["message_counter"] += 1
         
@@ -779,34 +795,43 @@ async def on_message(message):
 @client.event
 async def on_interaction(interaction):
     """Handle button interactions"""
+    if shutdown_flag:
+        return
+    
     if interaction.type == discord.InteractionType.component:
-        # The button views handle their own interactions
-        # This is just a fallback to ensure we acknowledge all interactions
         if not interaction.response.is_done():
             await interaction.response.defer()
 
 # -----------------------
-# STABILITY WRAPPER
+# MAIN BOT LOOP WITH STABILITY
 # -----------------------
 async def main_bot_loop():
     restart_count = 0
     max_restarts = 5
     
-    while True:
+    while not shutdown_flag and restart_count < max_restarts:
         try:
             token = os.environ.get("DISCORD_TOKEN")
             if not token:
-                print("❌ ERROR: DISCORD_TOKEN not found in environment!")
-                return
+                print("❌ ERROR: DISCORD_TOKEN not found!")
+                break
             
             print("🚀 Starting Discord bot...")
-            await client.start(token)
             
+            # Start with timeout
+            try:
+                async with asyncio.timeout(30):
+                    await client.start(token)
+            except asyncio.TimeoutError:
+                print("⏱️ Connection timeout, restarting...")
+                restart_count += 1
+                continue
+                
         except discord.LoginFailure:
-            print("❌ Invalid token! Check your DISCORD_TOKEN environment variable.")
+            print("❌ Invalid token!")
             break
         except discord.PrivilegedIntentsRequired:
-            print("❌ Privileged intents not enabled! Enable them in Discord Developer Portal.")
+            print("❌ Privileged intents not enabled!")
             break
         except Exception as e:
             restart_count += 1
@@ -814,27 +839,57 @@ async def main_bot_loop():
             
             if restart_count < max_restarts:
                 wait_time = min(30 * (2 ** restart_count), 300)
-                print(f"🔄 Restarting in {wait_time} seconds...")
-                time.sleep(wait_time)
+                print(f"🔄 Restarting in {wait_time}s...")
+                await asyncio.sleep(wait_time)
             else:
-                print(f"💀 Too many restarts ({max_restarts}). Giving up.")
+                print(f"💀 Too many restarts ({max_restarts})")
                 break
     
-    print("💀 Bot has stopped.")
+    # Graceful shutdown
+    print("💾 Saving data before exit...")
+    if cleanup_system:
+        cleanup_system.save_all_data()
+    save_data()
+    
+    print("👋 Bot shutdown complete")
 
 # -----------------------
 # START
 # -----------------------
 if __name__ == "__main__":
-    print("🎯 Starting bot with modular system...")
+    print("🎯 Starting bot with stability fixes...")
     print(f"🔧 Python: {sys.version}")
     print(f"🔧 Discord.py: {discord.__version__}")
     
-    # Create modules directory if it doesn't exist
+    # Create necessary directories
     os.makedirs("modules", exist_ok=True)
     os.makedirs("data", exist_ok=True)
     
-    # Start Flask
+    # Emergency recovery for corrupted data
+    def emergency_recovery():
+        print("🔄 Checking for corrupted data...")
+        critical_files = [
+            "user_activity.json",
+            "demoted_users.json", 
+            "pending_recruits.json",
+            "member_join_tracking.json",
+            "reminder_state.json"
+        ]
+        
+        for filename in critical_files:
+            filepath = os.path.join("data", filename) if "data" in filename else filename
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r') as f:
+                        json.load(f)
+                except:
+                    print(f"⚠️ {filename} corrupted, resetting")
+                    with open(filepath, 'w') as f:
+                        json.dump({} if "json" in filename else [], f)
+    
+    emergency_recovery()
+    
+    # Start Flask (for Render/uptime)
     def start_flask():
         port = int(os.environ.get("PORT", 8080))
         print(f"🌐 Flask on port {port}...")
@@ -851,10 +906,5 @@ if __name__ == "__main__":
         asyncio.run(main_bot_loop())
     except KeyboardInterrupt:
         print("\n🛑 Stopped by user.")
-        # Save data on shutdown
-        if cleanup_system:
-            cleanup_system.save_all_data()
-        save_data()
-        print("💾 Data saved successfully")
     except Exception as e:
         log_error("MAIN_BLOCK", e)
