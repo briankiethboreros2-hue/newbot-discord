@@ -16,13 +16,19 @@ from collections import defaultdict
 from keep_alive import app, ping_self, start_keep_alive
 
 # Import modules
+# Import modules
 try:
-    from cleanup_system import CleanupSystem
-    from poll_voting import PollVoting
+    from modules.cleanup_system import CleanupSystem
+    from modules.poll_voting import PollVoting
+    # We DON'T import button_views here directly
+    # It's imported dynamically inside cleanup_system.py
     print("✅ Successfully loaded modules")
 except ImportError as e:
     print(f"❌ Error importing modules: {e}")
-    print("📁 Make sure you have the modules folder with required files")
+    print("📁 Make sure you have the modules folder with:")
+    print("   - cleanup_system.py")
+    print("   - poll_voting.py")
+    print("   - button_views.py")
     sys.exit(1)
 
 # -----------------------
