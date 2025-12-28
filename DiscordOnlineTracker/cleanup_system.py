@@ -513,46 +513,65 @@ class CleanupSystem:
     
     # ========== RETURNING USER HANDLING ==========
     
-    async def handle_user_return(self, member: discord.Member):
-        """Handle when a demoted user returns online"""
-        try:
-            # Check if user is demoted
-            if str(member.id) not in self.demoted_users:
-                return
-            
-            # Send welcome message
-            welcome_channel = member.guild.get_channel(self.channels.get('welcome'))
-            if welcome_channel:
-                embed = discord.Embed(
-                    title="Welcome Back!",
-                    description=f"**{member.guild.name}**",
-                    color=discord.Color.green(),
-                    timestamp=datetime.now()
+async def handle_user_return(self, member: discord.Member):
+    """Handle when a demoted user returns online"""
+    try:
+        # Double-check user has demoted role
+        demote_role = member.guild.get_role(self.roles.get('demoted'))
+        if not demote_role or demote_role not in member.roles:
+            return  # Not actually demoted
+        
+        print(f"🔄 Demoted user returned: {member.display_name}")
+        
+        # Send welcome message
+        welcome_channel = member.guild.get_channel(self.channels.get('welcome'))
+        if welcome_channel:
+            try:
+                await welcome_channel.send(
+                    f"Welcome back! {member.mention}\n"
+                    f"You were demoted due to inactivity\n"
+                    f"I'll notify the admins about you"
                 )
-                
-                days_inactive = self.get_inactivity_days(member.id)
-                
-                embed.add_field(
-                    name="Message",
-                    value="You were demoted due to inactivity\nI'll notify the admins about you",
-                    inline=False
-                )
-                
-                embed.add_field(
-                    name="Days Inactive",
-                    value=f"{days_inactive} days",
-                    inline=False
-                )
-                
-                embed.set_footer(text="Please wait for admin review")
-                
-                await welcome_channel.send(f"Welcome back! {member.mention}", embed=embed)
-            
-            # Notify admin channel
-            await self._notify_admin_user_returned(member)
-            
-        except Exception as e:
-            self._handle_error("handle_user_return", e)
+            except Exception as e:
+                print(f"⚠️ Error sending welcome message: {e}")
+        
+        # Notify admin channel
+        await self._notify_admin_user_returned(member)
+        
+    except Exception as e:
+        self._handle_error("handle_user_return", e)
+
+async def _notify_admin_user_returned(self, member: discord.Member):
+    """Notify admins that a demoted user returned"""
+    try:
+        admin_channel = member.guild.get_channel(self.channels.get('admin'))
+        if not admin_channel:
+            return
+        
+        days_inactive = self.get_inactivity_days(member.id)
+        
+        # Create formatted message
+        border = "-" * 48
+        server_name_display = member.guild.name[:30]  # Limit length
+        
+        message_content = (
+            f"```\n{border}\n"
+            f"| 🟢 {server_name_display} came back online!{' ' * (15 - len(server_name_display))}|\n"
+            f"|                                              |\n"
+            f"|   Days inactive: {days_inactive:<28} |\n"
+            f"|                                              |\n"
+            f"| [PROMOTE BUTTON] [REVIEW BUTTON]            |\n"
+            f"{border}\n```"
+        )
+        
+        # Create view with buttons
+        from modules.button_views import ReturnReviewView
+        view = ReturnReviewView(member, self)
+        
+        await admin_channel.send(message_content, view=view)
+        
+    except Exception as e:
+        self._handle_error("_notify_admin_user_returned", e)
     
     async def _notify_admin_user_returned(self, member: discord.Member):
         """Notify admins that a demoted user returned"""
