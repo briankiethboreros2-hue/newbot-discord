@@ -856,6 +856,9 @@ async def main_bot_loop():
 # -----------------------
 # START
 # -----------------------
+# -----------------------
+# START
+# -----------------------
 if __name__ == "__main__":
     print("🎯 Starting bot with stability fixes...")
     print(f"🔧 Python: {sys.version}")
@@ -889,17 +892,12 @@ if __name__ == "__main__":
     
     emergency_recovery()
     
-    # Start Flask (for Render/uptime)
-    def start_flask():
-        port = int(os.environ.get("PORT", 8080))
-        print(f"🌐 Flask on port {port}...")
-        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+    # ✅ USE YOUR keep_alive.py FUNCTION INSTEAD
+    from keep_alive import start_keep_alive
     
-    flask_thread = threading.Thread(target=start_flask, daemon=True)
+    # Start Flask with ping system (using your optimized function)
+    flask_thread = threading.Thread(target=start_keep_alive, daemon=True)
     flask_thread.start()
-    
-    # Start pinger
-    threading.Thread(target=ping_self, daemon=True).start()
     
     # Start Bot
     try:
