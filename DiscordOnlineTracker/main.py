@@ -103,7 +103,7 @@ ROLES = {
 ADMIN_ROLES = [
     1389835747040694332,  # clan_master
     1437578521374363769,  # queen
-    143757291600583479,   # og_imperius
+    1437572916005834793,  # og_imperius (FIXED: was missing the last digit)
     1438420490455613540   # Additional admin role
 ]
 
@@ -411,6 +411,9 @@ async def cleanup_background_task():
     
     print("🔄 Starting cleanup background task...")
     
+    # Initial delay to let everything load
+    await asyncio.sleep(10)
+    
     while not client.is_closed():
         try:
             if cleanup_system and CLEANUP_ENABLED:
@@ -418,8 +421,8 @@ async def cleanup_background_task():
                 for guild in client.guilds:
                     await cleanup_system.run_cleanup_check(guild)
                 
-                # Clean old data once a day
-                if datetime.now().hour == 3:  # 3 AM
+                # Clean old data once a day at 3 AM
+                if datetime.now().hour == 3:
                     await cleanup_system.cleanup_old_data()
             
             # Check for expired polls
@@ -439,6 +442,11 @@ async def cleanup_background_task():
 @client.event
 async def on_ready():
     print(f"✅ Logged in as: {client.user} (ID: {client.user.id})")
+    print(f"👑 Bot is in {len(client.guilds)} guild(s)")
+    
+    for guild in client.guilds:
+        print(f"  - {guild.name} (ID: {guild.id})")
+    
     load_data()
     
     # Initialize modules
@@ -456,6 +464,10 @@ async def on_ready():
     asyncio.create_task(cleanup_background_task())
     
     print("--- Bot is ready with modular system ---")
+    print("Commands available:")
+    print("  !stats - Show bot statistics")
+    print("  !cleanup - Run manual cleanup check")
+    print("  !poll \"Question?\" \"Option 1\" \"Option 2\" - Create a poll")
 
 @client.event
 async def on_member_join(member):
@@ -469,7 +481,7 @@ async def on_member_join(member):
             return
     recent_joins[uid] = current_time
     
-    print(f"👤 Member joined: {member.display_name}")
+    print(f"👤 Member joined: {member.display_name} (ID: {member.id})")
     update_member_tracking(member, "joined")
     
     # Track activity in cleanup system
@@ -506,6 +518,10 @@ async def on_member_join(member):
                 save_data()
             except asyncio.TimeoutError:
                 await dm.send("⏳ Recruitment timed out. Please rejoin and try again.")
+                # Clean up pending recruit
+                if uid in pending_recruits:
+                    del pending_recruits[uid]
+                    save_data()
                 return
 
         await dm.send("✅ Thank you! Your application has been sent to our Staff. Please wait for review.")
@@ -535,8 +551,16 @@ async def on_member_join(member):
         print(f"❌ Could not DM {member.display_name} (DMs closed)")
         if recruit_ch:
             await recruit_ch.send(f"❌ {member.mention}, I couldn't DM you! Please open your DMs and rejoin to apply.")
+        # Clean up pending recruit
+        if uid in pending_recruits:
+            del pending_recruits[uid]
+            save_data()
     except Exception as e:
         log_error("on_member_join", e)
+        # Clean up on error
+        if uid in pending_recruits:
+            del pending_recruits[uid]
+            save_data()
 
 @client.event
 async def on_raw_reaction_add(payload):
@@ -544,38 +568,57 @@ async def on_raw_reaction_add(payload):
         return
 
     guild = client.get_guild(payload.guild_id)
-    if not guild: return
+    if not guild: 
+        return
     
     reactor = guild.get_member(payload.user_id)
-    if not reactor or not safety_wrappers.is_admin(reactor):
+    if not reactor:
         return
 
-    # 1. Handle Recruitment Voting
-    for uid, entry in list(pending_recruits.items()):
-        if entry.get("review_message_id") == payload.message_id and not entry.get("resolved"):
-            applicant = guild.get_member(int(uid))
-            staff_ch = client.get_channel(CHANNELS["staff_review"])
-            
-            if str(payload.emoji) == UPVOTE_EMOJI:
-                # Accept
-                success, msg = await safety_wrappers.assign_role_safe(applicant, ROLES["imperius"], reason=f"Accepted by {reactor.display_name}")
-                if success:
-                    entry["resolved"] = True
-                    entry["status"] = "accepted"
-                    if staff_ch: await staff_ch.send(f"✅ {applicant.mention if applicant else entry.get('name')} has been **ACCEPTED** by {reactor.mention}.")
-                    try: await applicant.send("🎉 **Congratulations!** You have been accepted into **Impèrius🔥**!")
-                    except: pass
-            
-            elif str(payload.emoji) == DOWNVOTE_EMOJI:
-                # Reject
-                success, msg = await safety_wrappers.kick_member_safe(applicant, reason=f"Rejected by {reactor.display_name}")
-                if success:
-                    entry["resolved"] = True
-                    entry["status"] = "rejected"
-                    if staff_ch: await staff_ch.send(f"❌ {applicant.mention if applicant else entry.get('name')} was **REJECTED** by {reactor.mention}.")
-            
-            save_data()
-            break
+    # 1. Handle Recruitment Voting (admin only)
+    if safety_wrappers.is_admin(reactor):
+        for uid, entry in list(pending_recruits.items()):
+            if entry.get("review_message_id") == payload.message_id and not entry.get("resolved"):
+                applicant = guild.get_member(int(uid))
+                staff_ch = client.get_channel(CHANNELS["staff_review"])
+                
+                if str(payload.emoji) == UPVOTE_EMOJI:
+                    # Accept
+                    success, msg = await safety_wrappers.assign_role_safe(
+                        applicant, 
+                        ROLES["imperius"], 
+                        reason=f"Accepted by {reactor.display_name}"
+                    )
+                    if success:
+                        entry["resolved"] = True
+                        entry["status"] = "accepted"
+                        if staff_ch: 
+                            await staff_ch.send(
+                                f"✅ {applicant.mention if applicant else entry.get('name')} "
+                                f"has been **ACCEPTED** by {reactor.mention}."
+                            )
+                        try: 
+                            await applicant.send("🎉 **Congratulations!** You have been accepted into **Impèrius🔥**!")
+                        except: 
+                            pass
+                
+                elif str(payload.emoji) == DOWNVOTE_EMOJI:
+                    # Reject
+                    success, msg = await safety_wrappers.kick_member_safe(
+                        applicant, 
+                        reason=f"Rejected by {reactor.display_name}"
+                    )
+                    if success:
+                        entry["resolved"] = True
+                        entry["status"] = "rejected"
+                        if staff_ch: 
+                            await staff_ch.send(
+                                f"❌ {applicant.mention if applicant else entry.get('name')} "
+                                f"was **REJECTED** by {reactor.mention}."
+                            )
+                
+                save_data()
+                break
     
     # 2. Handle poll reactions if using poll system
     if poll_voting:
@@ -595,11 +638,9 @@ async def on_presence_update(before, after):
         if cleanup_system:
             await cleanup_system.handle_user_return(after)
     
-    # Check for non-Online status while active (simple version)
-    # Note: This is sensitive, so we only log/warn if they are clearly 'Invisible' or 'DND' for a long time
-    # This logic is placeholder for your activity tracking
+    # Check for non-Online status while active
     if str(after.status) in ["offline", "invisible"]:
-        # update_member_tracking(after, "went_offline")
+        # Track going offline
         presence_cooldown[str(after.id)] = time.time()
 
 @client.event
@@ -620,64 +661,100 @@ async def on_message(message):
                 timestamp=datetime.now()
             )
             
+            # Active recruits
+            active_recruits = len([r for r in pending_recruits.values() if not r.get('resolved')])
+            total_recruits = len(pending_recruits)
+            
             embed.add_field(
-                name="Pending Recruits",
-                value=str(len([r for r in pending_recruits.values() if not r.get('resolved')])),
+                name="Recruitment",
+                value=f"Active: {active_recruits}\nTotal: {total_recruits}",
                 inline=True
             )
             
             embed.add_field(
-                name="Tracked Members",
-                value=str(len(member_join_tracking)),
+                name="Member Tracking",
+                value=f"Tracked: {len(member_join_tracking)}",
                 inline=True
             )
             
             if cleanup_system:
                 embed.add_field(
                     name="Cleanup System",
-                    value=f"Tracking {len(cleanup_system.user_activity)} users\n"
-                          f"{len(cleanup_system.demoted_users)} demoted users",
+                    value=f"Users: {len(cleanup_system.user_activity)}\n"
+                          f"Demoted: {len(cleanup_system.demoted_users)}\n"
+                          f"Under Review: {len(cleanup_system.users_under_review)}",
                     inline=False
                 )
             
+            embed.set_footer(text=f"Server: {message.guild.name}")
             await message.channel.send(embed=embed)
             return
             
         if message.content.lower().startswith("!cleanup"):
-            await message.channel.send("🧹 Starting manual cleanup...")
+            await message.channel.send("🧹 Starting manual cleanup check...")
             if cleanup_system:
                 for guild in client.guilds:
                     await cleanup_system.run_cleanup_check(guild)
                 await message.channel.send("✅ Cleanup check completed!")
+            else:
+                await message.channel.send("❌ Cleanup system not initialized")
             return
             
         if message.content.lower().startswith("!poll"):
             # Example: !poll "Question?" "Option 1" "Option 2" "Option 3"
             if poll_voting:
                 try:
-                    # Parse command
-                    parts = message.content.split('"')
-                    if len(parts) >= 5:
-                        question = parts[1]
-                        options = [part for part in parts[3:] if part.strip()]
+                    # Parse command: !poll "Question?" "Option 1" "Option 2"
+                    content = message.content[len("!poll"):].strip()
+                    
+                    # Find quoted parts
+                    import shlex
+                    try:
+                        parts = shlex.split(content)
+                    except:
+                        # Fallback if shlex fails
+                        parts = []
+                        in_quote = False
+                        current = ""
+                        for char in content:
+                            if char == '"':
+                                if in_quote and current:
+                                    parts.append(current)
+                                    current = ""
+                                in_quote = not in_quote
+                            elif in_quote:
+                                current += char
+                    
+                    if len(parts) >= 3:
+                        question = parts[0]
+                        options = parts[1:]
                         
-                        if len(options) >= 2:
-                            await poll_voting.create_poll(
+                        if len(options) >= 2 and len(options) <= 10:
+                            poll_msg = await poll_voting.create_poll(
                                 message.channel,
                                 question,
                                 options,
                                 duration_minutes=60,
                                 allowed_voters=ADMIN_ROLES
                             )
+                            if poll_msg:
+                                await message.channel.send(f"✅ Poll created! {poll_msg.jump_url}")
+                            else:
+                                await message.channel.send("❌ Failed to create poll")
                         else:
-                            await message.channel.send("❌ Poll needs at least 2 options!")
+                            await message.channel.send("❌ Poll needs 2-10 options!")
                     else:
-                        await message.channel.send("❌ Usage: !poll \"Question?\" \"Option 1\" \"Option 2\" ...")
+                        await message.channel.send(
+                            "❌ Usage: `!poll \"Question?\" \"Option 1\" \"Option 2\"`\n"
+                            "Example: `!poll \"Best game?\" \"Valorant\" \"MLBB\" \"COD\"`"
+                        )
                 except Exception as e:
-                    await message.channel.send(f"❌ Error creating poll: {e}")
+                    await message.channel.send(f"❌ Error creating poll: {str(e)[:100]}")
+            else:
+                await message.channel.send("❌ Poll system not initialized")
             return
 
-    # Counter-based Reminders
+    # Counter-based Reminders (only in main channel)
     if message.channel.id == CHANNELS["main"]:
         state["message_counter"] += 1
         
@@ -687,7 +764,11 @@ async def on_message(message):
             reminder_ch = client.get_channel(CHANNELS["reminder"])
             if reminder_ch:
                 rem = REMINDERS[state["current_reminder"]]
-                embed = discord.Embed(title=rem["title"], description=rem["description"], color=discord.Color.gold())
+                embed = discord.Embed(
+                    title=rem["title"], 
+                    description=rem["description"], 
+                    color=discord.Color.gold()
+                )
                 embed.set_footer(text="Impèrius Clan Management")
                 await reminder_ch.send(embed=embed)
                 
@@ -718,6 +799,7 @@ async def main_bot_loop():
                 print("❌ ERROR: DISCORD_TOKEN not found in environment!")
                 return
             
+            print("🚀 Starting Discord bot...")
             await client.start(token)
             
         except discord.LoginFailure:
@@ -750,6 +832,7 @@ if __name__ == "__main__":
     
     # Create modules directory if it doesn't exist
     os.makedirs("modules", exist_ok=True)
+    os.makedirs("data", exist_ok=True)
     
     # Start Flask
     def start_flask():
@@ -767,10 +850,11 @@ if __name__ == "__main__":
     try:
         asyncio.run(main_bot_loop())
     except KeyboardInterrupt:
-        print("🛑 Stopped by user.")
+        print("\n🛑 Stopped by user.")
         # Save data on shutdown
         if cleanup_system:
             cleanup_system.save_all_data()
         save_data()
+        print("💾 Data saved successfully")
     except Exception as e:
         log_error("MAIN_BLOCK", e)
