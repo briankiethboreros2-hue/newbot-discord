@@ -1,4 +1,4 @@
-# modules/poll_manager.py - Poll-based voting system
+# modules/poll_manager.py - Poll-based voting system ...
 import discord
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
