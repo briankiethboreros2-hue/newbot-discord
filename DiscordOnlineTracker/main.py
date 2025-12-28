@@ -1,4 +1,4 @@
-# main.py - Core bot file (minimal)
+# main.py - CLEAN MODULAR VERSION
 import discord
 from discord.ext import commands
 import asyncio
@@ -9,7 +9,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import configuration
-from config import Config, BOT_TOKEN
+from config import Config
 
 # Import utilities
 from utils.logger import BotLogger, logger
@@ -34,7 +34,7 @@ class ModularBot(commands.Bot):
         super().__init__(
             command_prefix='!',
             intents=intents,
-            help_command=None  # We'll create custom help
+            help_command=None
         )
         
         # Initialize components
@@ -106,7 +106,7 @@ class ModularBot(commands.Bot):
                 
                 embed.add_field(
                     name="Version", 
-                    value="1.0.0 (Modular System)",
+                    value="2.0.0 (Poll-Based Modular System)",
                     inline=True
                 )
                 
@@ -283,14 +283,15 @@ async def help_command(ctx):
 
 if __name__ == "__main__":
     # Check for token
-    if not BOT_TOKEN:
-        print("❌ ERROR: BOT_TOKEN not found in .env file")
-        print("Please create a .env file with: DISCORD_BOT_TOKEN=your_token_here")
+    if not Config.BOT_TOKEN:
+        print("❌ ERROR: DISCORD_BOT_TOKEN not found!")
+        print("Local: Create .env file with DISCORD_BOT_TOKEN=your_token")
+        print("Render: Add DISCORD_BOT_TOKEN as environment variable")
         sys.exit(1)
     
     # Run bot with error handling
     try:
-        bot.run(BOT_TOKEN)
+        bot.run(Config.BOT_TOKEN)
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
         sys.exit(0)
