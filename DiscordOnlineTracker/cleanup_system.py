@@ -313,9 +313,6 @@ class CleanupSystem:
             return
         
         try:
-            # Import here to avoid circular imports
-            from modules.button_views import GhostUserView
-            
             # Get last active time
             last_active = self.user_activity.get(str(member.id), {}).get('last_active', 'Unknown')
             if isinstance(last_active, datetime):
@@ -352,8 +349,6 @@ class CleanupSystem:
             return
         
         try:
-            from modules.button_views import DemotionReviewView
-            
             # Get last active time
             last_active = self.user_activity.get(str(member.id), {}).get('last_active', 'Unknown')
             if isinstance(last_active, datetime):
@@ -568,8 +563,6 @@ class CleanupSystem:
             
             days_inactive = self.get_inactivity_days(member.id)
             
-            from modules.button_views import ReturnReviewView
-            
             # Create formatted message
             border = "-" * 48
             message_content = (
@@ -596,8 +589,6 @@ class CleanupSystem:
                 return
             
             days_inactive = self.get_inactivity_days(member.id)
-            
-            from modules.button_views import FinalReviewView
             
             # Create formatted message
             border = "-" * 48
@@ -740,3 +731,9 @@ class CleanupSystem:
             
         except Exception as e:
             self._handle_error("cleanup_old_data", e)
+
+
+# Import views here to avoid circular imports
+from modules.button_views import (
+    GhostUserView, DemotionReviewView, ReturnReviewView, FinalReviewView
+)
