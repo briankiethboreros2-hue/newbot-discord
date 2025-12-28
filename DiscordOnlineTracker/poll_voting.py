@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import json
+import os
 
 class PollVoting:
     """Poll-based voting system"""
@@ -17,7 +18,11 @@ class PollVoting:
         self.client = client
         self.active_polls: Dict[int, Dict] = {}  # message_id -> poll_data
         self.poll_results: Dict[int, Dict] = {}
-        self.poll_file = "data/active_polls.json"
+        self.data_dir = "data"
+        self.poll_file = os.path.join(self.data_dir, "active_polls.json")
+        
+        # Ensure data directory exists
+        os.makedirs(self.data_dir, exist_ok=True)
         
         # Load active polls on startup
         self.load_polls()
@@ -54,8 +59,6 @@ class PollVoting:
     def save_polls(self):
         """Save active polls to file"""
         try:
-            os.makedirs("data", exist_ok=True)
-            
             # Convert datetime to string for JSON
             polls_to_save = {}
             for msg_id, poll_data in self.active_polls.items():
