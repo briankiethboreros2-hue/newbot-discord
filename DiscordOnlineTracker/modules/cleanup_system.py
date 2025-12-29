@@ -1,5 +1,6 @@
 """
 ENHANCED CLEANUP SYSTEM WITH STABILITY FIXES
+- Fixed JSON serialization issues
 - Prevents Cloudflare bans with rate limiting
 - Fixes member display issues
 - Prevents spamming
@@ -13,16 +14,19 @@ import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 import aiohttp
 
 class CleanupSystem:
     def __init__(self, client, config):
         self.client = client
         self.config = config
+        
+        # Load data with proper serialization handling
         self.user_activity = self.load_json('data/user_activity.json', {})
         self.demoted_users = self.load_json('data/demoted_users.json', {})
         self.demotion_posts = self.load_json('data/demotion_posts.json', {})
+        
         self.last_cleanup_run = 0
         self.last_demotion_post = {}
         
@@ -41,34 +45,81 @@ class CleanupSystem:
         
         print("✅ Cleanup system initialized with stability fixes")
     
-    # ==================== UTILITY METHODS ====================
+    # ==================== FIXED JSON UTILITY METHODS ====================
     
-    def load_json(self, path, default):
-        """Safe JSON loading with corruption recovery"""
+    def serialize_for_json(self, obj: Any) -> Any:
+        """Convert datetime objects to ISO strings for JSON serialization"""
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        elif isinstance(obj, dict):
+            return {key: self.serialize_for_json(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self.serialize_for_json(item) for item in obj]
+        elif isinstance(obj, (int, float, str, bool, type(None))):
+            return obj
+        else:
+            # Convert to string representation for other types
+            return str(obj)
+    
+    def deserialize_from_json(self, obj: Any) -> Any:
+        """Convert ISO strings back to datetime objects after loading"""
+        if isinstance(obj, str):
+            # Try to parse as datetime
+            try:
+                # Handle different datetime formats
+                for fmt in ('%Y-%m-%dT%H:%M:%S.%f%z', '%Y-%m-%dT%H:%M:%S%z', 
+                           '%Y-%m-%d %H:%M:%S.%f%z', '%Y-%m-%d %H:%M:%S%z'):
+                    try:
+                        return datetime.strptime(obj, fmt)
+                    except ValueError:
+                        continue
+                # If no timezone info, add UTC
+                if 'T' in obj and '+' not in obj and 'Z' not in obj:
+                    obj = obj + '+00:00'
+                    return datetime.fromisoformat(obj)
+            except (ValueError, AttributeError):
+                return obj
+        elif isinstance(obj, dict):
+            return {key: self.deserialize_from_json(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self.deserialize_from_json(item) for item in obj]
+        return obj
+    
+    def load_json(self, path: str, default: Any) -> Any:
+        """Safe JSON loading with datetime handling"""
         try:
             if os.path.exists(path):
-                with open(path, 'r') as f:
-                    return json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    # Deserialize datetime strings back to datetime objects
+                    return self.deserialize_from_json(data)
+        except (json.JSONDecodeError, IOError, ValueError) as e:
             print(f"⚠️ Error loading {path}: {e}, using default")
         return default
     
-    def save_json(self, path, data):
-        """Safe JSON saving with atomic write"""
+    def save_json(self, path: str, data: Any) -> bool:
+        """Safe JSON saving with datetime serialization"""
         try:
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(path), exist_ok=True)
             
+            # Serialize datetime objects to strings
+            serialized_data = self.serialize_for_json(data)
+            
             # Write to temp file first
             temp_path = f"{path}.tmp"
-            with open(temp_path, 'w') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(serialized_data, f, indent=2, ensure_ascii=False)
+            
+            # Verify the JSON is valid
+            with open(temp_path, 'r', encoding='utf-8') as f:
+                json.load(f)
             
             # Atomic replace
             os.replace(temp_path, path)
             return True
         except Exception as e:
-            print(f"❌ Error saving {path}: {e}")
+            print(f"❌ Error saving {path}: {type(e).__name__}: {e}")
             return False
     
     async def rate_limit_check(self):
@@ -98,44 +149,55 @@ class CleanupSystem:
         # Clean user activity older than 30 days
         if hasattr(self, 'user_activity'):
             for user_id in list(self.user_activity.keys()):
-                last_seen = self.user_activity[user_id].get('last_seen', 0)
-                if last_seen < week_ago:
+                user_data = self.user_activity[user_id]
+                last_seen = user_data.get('last_seen')
+                if isinstance(last_seen, datetime):
+                    last_seen = last_seen.timestamp()
+                elif isinstance(last_seen, str):
+                    try:
+                        last_seen = datetime.fromisoformat(last_seen.replace('Z', '+00:00')).timestamp()
+                    except:
+                        last_seen = 0
+                
+                if last_seen and last_seen < week_ago:
                     del self.user_activity[user_id]
         
         # Clean recent operations older than 1 hour
+        current_time = time.time()
         for key in list(self.recent_operations.keys()):
             if current_time - self.recent_operations[key] > 3600:
                 del self.recent_operations[key]
     
-    # ==================== ACTIVITY TRACKING ====================
+    # ==================== FIXED ACTIVITY TRACKING ====================
     
-    async def track_user_activity(self, user_id, activity_type="message"):
+    async def track_user_activity(self, user_id: int, activity_type: str = "message"):
         """Track user activity with rate limiting"""
         try:
             await self.rate_limit_check()
             
             uid = str(user_id)
             current_time = time.time()
+            current_datetime = datetime.now(timezone.utc)
             
             if uid not in self.user_activity:
                 self.user_activity[uid] = {
-                    'last_seen': current_time,
-                    'last_message': current_time,
-                    'last_presence': current_time,
+                    'last_seen': current_datetime,
+                    'last_message': current_datetime,
+                    'last_presence': current_datetime,
                     'activities': []
                 }
             
-            self.user_activity[uid]['last_seen'] = current_time
+            self.user_activity[uid]['last_seen'] = current_datetime
             
             if activity_type == "message":
-                self.user_activity[uid]['last_message'] = current_time
+                self.user_activity[uid]['last_message'] = current_datetime
             elif activity_type == "presence_update":
-                self.user_activity[uid]['last_presence'] = current_time
+                self.user_activity[uid]['last_presence'] = current_datetime
             
-            # Track last 10 activities
+            # Track last 10 activities with proper datetime objects
             self.user_activity[uid]['activities'].append({
                 'type': activity_type,
-                'time': current_time
+                'time': current_datetime
             })
             
             if len(self.user_activity[uid]['activities']) > 10:
@@ -148,25 +210,41 @@ class CleanupSystem:
         except Exception as e:
             print(f"⚠️ Error tracking activity: {e}")
     
-    def get_last_activity(self, user_id):
+    def get_last_activity(self, user_id: int) -> Optional[datetime]:
         """Get last activity timestamp for a user"""
         uid = str(user_id)
         if uid in self.user_activity:
-            return self.user_activity[uid].get('last_seen')
+            last_seen = self.user_activity[uid].get('last_seen')
+            # Ensure it's a datetime object
+            if isinstance(last_seen, str):
+                try:
+                    return datetime.fromisoformat(last_seen.replace('Z', '+00:00'))
+                except:
+                    return None
+            return last_seen
         return None
     
-    def calculate_days_inactive(self, last_activity_timestamp):
+    def calculate_days_inactive(self, last_activity: Optional[datetime]) -> int:
         """Calculate days inactive from timestamp"""
-        if not last_activity_timestamp:
+        if not last_activity:
             return 999  # Default for unknown
         
-        current_time = time.time()
-        days_inactive = (current_time - last_activity_timestamp) / 86400
+        current_time = datetime.now(timezone.utc)
+        if isinstance(last_activity, str):
+            try:
+                last_activity = datetime.fromisoformat(last_activity.replace('Z', '+00:00'))
+            except:
+                return 999
+        
+        if isinstance(last_activity, (int, float)):
+            last_activity = datetime.fromtimestamp(last_activity, tz=timezone.utc)
+        
+        days_inactive = (current_time - last_activity).total_seconds() / 86400
         return int(days_inactive)
     
     # ==================== DEMOTION SYSTEM ====================
     
-    async def check_demotion_candidates(self, guild):
+    async def check_demotion_candidates(self, guild: discord.Guild) -> List[Dict]:
         """Check for demotion candidates (15+ days inactive)"""
         try:
             imperius_role = guild.get_role(self.config['roles'].get('imperius'))
@@ -214,7 +292,7 @@ class CleanupSystem:
             print(f"❌ Error in demotion check: {e}")
             return []
     
-    async def send_demotion_post(self, member_data):
+    async def send_demotion_post(self, member_data: Dict) -> Optional[discord.Message]:
         """Send demotion candidate post with proper formatting"""
         try:
             await self.rate_limit_check()
@@ -238,8 +316,15 @@ class CleanupSystem:
             
             # Format last active
             if last_active:
-                last_active_dt = datetime.fromtimestamp(last_active, tz=timezone.utc)
-                last_active_str = last_active_dt.strftime("%Y-%m-%d %H:%M UTC")
+                if isinstance(last_active, str):
+                    try:
+                        last_active = datetime.fromisoformat(last_active.replace('Z', '+00:00'))
+                    except:
+                        last_active_str = last_active
+                elif isinstance(last_active, datetime):
+                    last_active_str = last_active.strftime("%Y-%m-%d %H:%M UTC")
+                else:
+                    last_active_str = str(last_active)
             else:
                 last_active_str = "Unknown"
             
@@ -305,7 +390,7 @@ class CleanupSystem:
             self.demotion_posts[member_id].append({
                 'message_id': message.id,
                 'channel_id': cleanup_channel.id,
-                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'timestamp': datetime.now(timezone.utc),
                 'member_name': member.display_name,
                 'days_inactive': days_inactive
             })
@@ -329,7 +414,7 @@ class CleanupSystem:
     
     # ==================== GHOST CLEANUP SYSTEM ====================
     
-    async def check_ghost_users(self, guild):
+    async def check_ghost_users(self, guild: discord.Guild) -> List[Dict]:
         """Check for ghost users (7+ days without roles & inactive)"""
         try:
             ghosts = []
@@ -373,7 +458,7 @@ class CleanupSystem:
             print(f"❌ Error in ghost check: {e}")
             return []
     
-    async def send_ghost_report(self, ghost_data):
+    async def send_ghost_report(self, ghost_data: Dict) -> Optional[discord.Message]:
         """Send ghost user report"""
         try:
             await self.rate_limit_check()
@@ -390,8 +475,16 @@ class CleanupSystem:
             
             # Format dates
             if last_active:
-                last_active_dt = datetime.fromtimestamp(last_active, tz=timezone.utc)
-                last_active_str = last_active_dt.strftime("%Y-%m-%d %H:%M UTC")
+                if isinstance(last_active, str):
+                    try:
+                        last_active = datetime.fromisoformat(last_active.replace('Z', '+00:00'))
+                        last_active_str = last_active.strftime("%Y-%m-%d %H:%M UTC")
+                    except:
+                        last_active_str = last_active
+                elif isinstance(last_active, datetime):
+                    last_active_str = last_active.strftime("%Y-%m-%d %H:%M UTC")
+                else:
+                    last_active_str = str(last_active)
             else:
                 last_active_str = "Unknown"
             
@@ -412,7 +505,7 @@ class CleanupSystem:
                 name="👤 User Information",
                 value=f"**Name:** {member.display_name}\n"
                       f"**ID:** `{member.id}`\n"
-                      f"**Discord:** {member.name}#{member.discriminator}\n"
+                      f"**Discord:** {member.name}#{member.discriminator if hasattr(member, 'discriminator') else '0'}\n"
                       f"**Server Join:** {join_date_str}",
                 inline=False
             )
@@ -455,14 +548,15 @@ class CleanupSystem:
     
     # ==================== MAIN CLEANUP METHODS ====================
     
-    async def run_cleanup_check(self, guild):
+    async def run_cleanup_check(self, guild: discord.Guild):
         """Main cleanup check with anti-spam and rate limiting"""
         try:
             current_time = time.time()
             
             # Check cooldown (6 hours minimum between runs)
             if current_time - self.last_cleanup_run < self.cleanup_cooldown:
-                print(f"⏭️ Cleanup check on cooldown. Next run in {int((self.cleanup_cooldown - (current_time - self.last_cleanup_run)) / 3600)} hours")
+                hours_left = (self.cleanup_cooldown - (current_time - self.last_cleanup_run)) / 3600
+                print(f"⏭️ Cleanup check on cooldown. Next run in {hours_left:.1f} hours")
                 return
             
             print(f"🧹 Starting cleanup check for {guild.name}...")
@@ -507,20 +601,24 @@ class CleanupSystem:
             print(f"✅ Cleanup check completed:")
             print(f"   Demotion candidates: {demotion_count}")
             print(f"   Ghost users: {ghost_count}")
-            print(f"   Next check in 6 hours")
+            print(f"   Next check in {self.cleanup_cooldown/3600} hours")
             
         except Exception as e:
-            print(f"❌ Error in main cleanup check: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ Error in main cleanup check: {type(e).__name__}: {e}")
     
-    async def handle_user_return(self, member):
+    async def handle_user_return(self, member: discord.Member):
         """Handle when a demoted user returns"""
         try:
             demoted_role = member.guild.get_role(self.config['roles'].get('demoted'))
             imperius_role = member.guild.get_role(self.config['roles'].get('imperius'))
             
             if demoted_role and demoted_role in member.roles:
+                # Check bot permissions before attempting
+                bot_member = member.guild.get_member(self.client.user.id)
+                if not bot_member.guild_permissions.manage_roles:
+                    print(f"❌ Bot lacks permissions to manage roles for {member.display_name}")
+                    return
+                
                 # Remove demoted role
                 await member.remove_roles(demoted_role)
                 
@@ -540,12 +638,14 @@ class CleanupSystem:
                 
                 print(f"✅ Restored {member.display_name} to Imperius role")
                 
+        except discord.Forbidden as e:
+            print(f"❌ Permission error handling user return for {member.display_name}: {e}")
         except Exception as e:
-            print(f"❌ Error handling user return: {e}")
+            print(f"❌ Error handling user return: {type(e).__name__}: {e}")
     
     # ==================== REACTION HANDLING ====================
     
-    async def handle_demotion_reaction(self, payload):
+    async def handle_demotion_reaction(self, payload: discord.RawReactionActionEvent):
         """Handle reactions on demotion posts"""
         try:
             # Only process in cleanup channel
@@ -560,7 +660,14 @@ class CleanupSystem:
             
             try:
                 message = await channel.fetch_message(payload.message_id)
-            except:
+            except discord.NotFound:
+                return
+            except discord.Forbidden:
+                print(f"❌ Missing access to fetch message {payload.message_id}")
+                return
+            except discord.HTTPException as e:
+                if e.status == 403:
+                    print(f"❌ 403 Forbidden accessing message {payload.message_id}")
                 return
             
             # Check if it's a demotion post (has specific reactions)
@@ -569,6 +676,9 @@ class CleanupSystem:
             
             # Get reactor
             guild = self.client.get_guild(payload.guild_id)
+            if not guild:
+                return
+            
             reactor = guild.get_member(payload.user_id)
             
             if not reactor or reactor.bot:
@@ -580,7 +690,10 @@ class CleanupSystem:
             
             if not any(role_id in admin_roles for role_id in reactor_roles):
                 # Remove non-admin reaction
-                await message.remove_reaction(payload.emoji, reactor)
+                try:
+                    await message.remove_reaction(payload.emoji, reactor)
+                except:
+                    pass
                 return
             
             # Parse member ID from embed footer
@@ -611,8 +724,12 @@ class CleanupSystem:
                 emoji = str(reaction.emoji)
                 if emoji in ["⬇️", "👢", "✅"]:
                     # Get users who reacted (excluding bots)
-                    users = [user async for user in reaction.users() if not user.bot]
-                    vote_counts[emoji] = len(users)
+                    try:
+                        users = [user async for user in reaction.users() if not user.bot]
+                        vote_counts[emoji] = len(users)
+                    except discord.Forbidden:
+                        print(f"❌ Missing access to fetch reaction users for {emoji}")
+                        vote_counts[emoji] = 0
             
             print(f"📊 Vote counts for {member.display_name}: {vote_counts}")
             
@@ -623,63 +740,76 @@ class CleanupSystem:
                     break
             
         except Exception as e:
-            print(f"❌ Error handling demotion reaction: {e}")
+            print(f"❌ Error handling demotion reaction: {type(e).__name__}: {e}")
     
-    async def process_demotion_decision(self, member, decision_emoji, message):
+    async def process_demotion_decision(self, member: discord.Member, decision_emoji: str, message: discord.Message):
         """Process the final demotion decision"""
         try:
             guild = member.guild
             imperius_role = guild.get_role(self.config['roles'].get('imperius'))
             demoted_role = guild.get_role(self.config['roles'].get('demoted'))
             
+            # Check bot permissions
+            bot_member = guild.get_member(self.client.user.id)
+            if not bot_member.guild_permissions.manage_roles:
+                print(f"❌ Bot lacks permissions to manage roles for {member.display_name}")
+                return
+            
             if decision_emoji == "⬇️":  # Demote
-                if imperius_role in member.roles and demoted_role:
-                    await member.remove_roles(imperius_role)
-                    await member.add_roles(demoted_role)
-                    
-                    # Update embed
-                    embed = message.embeds[0]
-                    embed.color = discord.Color.blue()
-                    embed.add_field(
-                        name="✅ Decision Reached",
-                        value=f"**DEMOTED** by admin vote\n"
-                              f"{member.display_name} has been moved to Demoted role.",
-                        inline=False
-                    )
-                    
-                    await message.edit(embed=embed)
-                    
-                    # Send DM
+                if imperius_role and imperius_role in member.roles and demoted_role:
                     try:
-                        await member.send(
-                            f"👋 Hello {member.display_name},\n\n"
-                            f"Due to extended inactivity, you have been moved to the **Demoted** role in **{guild.name}**.\n"
-                            f"You can regain your Imperius role by becoming active again!\n\n"
-                            f"Last active: {embed.fields[1].value.split('**Last Active:** ')[1].split('\\n')[0]}"
+                        await member.remove_roles(imperius_role)
+                        await member.add_roles(demoted_role)
+                        
+                        # Update embed
+                        embed = message.embeds[0]
+                        embed.color = discord.Color.blue()
+                        embed.add_field(
+                            name="✅ Decision Reached",
+                            value=f"**DEMOTED** by admin vote\n"
+                                  f"{member.display_name} has been moved to Demoted role.",
+                            inline=False
                         )
-                    except:
-                        pass
-                    
-                    print(f"✅ Demoted {member.display_name}")
+                        
+                        await message.edit(embed=embed)
+                        
+                        # Send DM
+                        try:
+                            await member.send(
+                                f"👋 Hello {member.display_name},\n\n"
+                                f"Due to extended inactivity, you have been moved to the **Demoted** role in **{guild.name}**.\n"
+                                f"You can regain your Imperius role by becoming active again!\n\n"
+                                f"Server: {guild.name}"
+                            )
+                        except discord.Forbidden:
+                            print(f"⚠️ Cannot DM {member.display_name}")
+                        
+                        print(f"✅ Demoted {member.display_name}")
+                    except discord.Forbidden as e:
+                        print(f"❌ Permission error demoting {member.display_name}: {e}")
             
             elif decision_emoji == "👢":  # Kick
                 # Check bot permissions
-                bot_member = guild.get_member(self.client.user.id)
                 if bot_member.guild_permissions.kick_members:
-                    await member.kick(reason="Inactive for 15+ days (admin vote)")
-                    
-                    # Update embed
-                    embed = message.embeds[0]
-                    embed.color = discord.Color.red()
-                    embed.add_field(
-                        name="✅ Decision Reached",
-                        value=f"**KICKED** by admin vote\n"
-                              f"{member.display_name} has been removed from the server.",
-                        inline=False
-                    )
-                    
-                    await message.edit(embed=embed)
-                    print(f"✅ Kicked {member.display_name}")
+                    try:
+                        await member.kick(reason="Inactive for 15+ days (admin vote)")
+                        
+                        # Update embed
+                        embed = message.embeds[0]
+                        embed.color = discord.Color.red()
+                        embed.add_field(
+                            name="✅ Decision Reached",
+                            value=f"**KICKED** by admin vote\n"
+                                  f"{member.display_name} has been removed from the server.",
+                            inline=False
+                        )
+                        
+                        await message.edit(embed=embed)
+                        print(f"✅ Kicked {member.display_name}")
+                    except discord.Forbidden as e:
+                        print(f"❌ Permission error kicking {member.display_name}: {e}")
+                else:
+                    print(f"❌ Bot lacks kick permissions for {member.display_name}")
             
             elif decision_emoji == "✅":  # Spare
                 # Update embed
@@ -696,21 +826,32 @@ class CleanupSystem:
                 print(f"✅ Spared {member.display_name}")
             
             # Clear reactions to prevent further voting
-            await message.clear_reactions()
+            try:
+                await message.clear_reactions()
+            except discord.Forbidden:
+                print(f"⚠️ Cannot clear reactions on message {message.id}")
             
-        except discord.Forbidden:
-            print(f"❌ Bot lacks permissions to modify {member.display_name}")
+        except discord.Forbidden as e:
+            print(f"❌ Permission error processing demotion for {member.display_name}: {e}")
         except Exception as e:
-            print(f"❌ Error processing demotion decision: {e}")
+            print(f"❌ Error processing demotion decision: {type(e).__name__}: {e}")
     
     # ==================== DATA MANAGEMENT ====================
     
     def save_all_data(self):
-        """Save all data files"""
-        self.save_json('data/user_activity.json', self.user_activity)
-        self.save_json('data/demoted_users.json', self.demoted_users)
-        self.save_json('data/demotion_posts.json', self.demotion_posts)
-        print("💾 Cleanup system data saved")
+        """Save all data files with proper error handling"""
+        try:
+            success1 = self.save_json('data/user_activity.json', self.user_activity)
+            success2 = self.save_json('data/demoted_users.json', self.demoted_users)
+            success3 = self.save_json('data/demotion_posts.json', self.demotion_posts)
+            
+            if success1 and success2 and success3:
+                print("💾 Cleanup system data saved successfully")
+            else:
+                print("⚠️ Some cleanup data files failed to save")
+                
+        except Exception as e:
+            print(f"❌ CleanupSystem error in save_all_data: {type(e).__name__}: {e}")
     
     async def cleanup_old_data(self):
         """Clean up old demotion posts data"""
@@ -721,7 +862,7 @@ class CleanupSystem:
                 # Remove posts older than 7 days
                 self.demotion_posts[member_id] = [
                     post for post in self.demotion_posts[member_id]
-                    if datetime.fromisoformat(post['timestamp'].replace('Z', '+00:00')) > week_ago
+                    if isinstance(post.get('timestamp'), datetime) and post['timestamp'] > week_ago
                 ]
                 
                 # Remove empty entries
@@ -732,4 +873,4 @@ class CleanupSystem:
             print("🧹 Cleaned up old demotion posts data")
             
         except Exception as e:
-            print(f"❌ Error cleaning old data: {e}")
+            print(f"❌ Error cleaning old data: {type(e).__name__}: {e}")
