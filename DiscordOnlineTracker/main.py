@@ -11,7 +11,7 @@ import time
 # Import our modules
 from recruitment import RecruitmentSystem
 from online_announce import OnlineAnnounce
-from cleanup import CleanupSystem
+from cleanup import CleanupSystem, InactiveMemberVoteView  # Added import
 from state_manager import StateManager
 
 # Import your existing keep_alive
@@ -53,7 +53,7 @@ class ImperialBot(commands.Bot):
         # Initialize systems
         self.recruitment = None
         self.online_announce = None
-        self.cleanup = None
+        self.cleanup_system = None  # Renamed to cleanup_system for clarity
         
         # Store guild for quick access
         self.main_guild = None
@@ -92,11 +92,16 @@ class ImperialBot(commands.Bot):
             # Initialize systems with the guild
             self.recruitment = RecruitmentSystem(self, self.main_guild, self.state)
             self.online_announce = OnlineAnnounce(self, self.main_guild, self.state)
-            self.cleanup = CleanupSystem(self, self.main_guild, self.state)
+            
+            # Initialize cleanup system
+            self.cleanup_system = CleanupSystem(self, self.main_guild, self.state)
+            
+            # Make cleanup system accessible to views
+            InactiveMemberVoteView.cleanup_system = self.cleanup_system
             
             # Start cleanup task
-            if hasattr(self.cleanup, 'start_cleanup_task'):
-                self.cleanup.start_cleanup_task()
+            if hasattr(self.cleanup_system, 'start_cleanup_task'):
+                self.cleanup_system.start_cleanup_task()
                 logger.info("✅ Cleanup task started")
             
             # Start online announcement tracking
@@ -204,6 +209,12 @@ class ImperialBot(commands.Bot):
             # Clean up any active interviews for this user
             if self.recruitment and hasattr(self.recruitment, 'cleanup_member_data'):
                 self.recruitment.cleanup_member_data(member.id)
+                
+            # Remove from cleanup system tracking if exists
+            if self.cleanup_system and hasattr(self.cleanup_system, 'member_last_check'):
+                if member.id in self.cleanup_system.member_last_check:
+                    del self.cleanup_system.member_last_check[member.id]
+                    logger.info(f"Removed {member.name} from cleanup tracking")
                 
         except Exception as e:
             logger.error(f"❌ Error in on_member_remove: {e}")
