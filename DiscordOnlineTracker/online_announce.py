@@ -15,7 +15,7 @@ class OnlineAnnounce:
         self.announce_channel_id = 1437768842871832597  # Attendance channel
         self.bot_startup_time = datetime.now()
         
-        # Role configuration
+        # Role configuration - INCLUDES INACTIVE ROLE
         self.role_config = {
             1437570031822176408: {  # Impèrius🔥
                 "name": "Impèrius🔥",
@@ -36,6 +36,10 @@ class OnlineAnnounce:
             1438420490455613540: {  # cute ✨
                 "name": "cute ✨",
                 "format": "Most cute ✨ {member} went online!"
+            },
+            1454803208995340328: {  # Inactive role - ADDED FOR TRACKING
+                "name": "Inactive",
+                "format": "Inactive {member} is online!"
             }
         }
         
@@ -49,18 +53,27 @@ class OnlineAnnounce:
         # Clear tracking
         self.online_members.clear()
         
+        # Mark current online members
+        for member in self.guild.members:
+            if member.status != discord.Status.offline and not member.bot:
+                has_tracked_role = any(role.id in self.tracked_role_ids for role in member.roles)
+                if has_tracked_role:
+                    self.online_members.add(member.id)
+        
+        logger.info(f"📊 Already online: {len(self.online_members)} tracked members")
+        
         # Start tasks
-        self.init_delayed.start()  # Wait 30 seconds before initial check
-        self.presence_check.start()  # Regular presence check
+        self.init_delayed.start()
+        self.presence_check.start()
     
-    @tasks.loop(count=1)  # Run once after delay
+    @tasks.loop(count=1)
     async def init_delayed(self):
         """Wait 30 seconds after bot startup before initializing"""
-        await asyncio.sleep(30)  # Wait for Discord to send all presence data
+        await asyncio.sleep(30)
         logger.info("✅ Delayed initialization complete")
         self.initialized = True
     
-    @tasks.loop(seconds=45)  # Check every 45 seconds
+    @tasks.loop(seconds=45)
     async def presence_check(self):
         """Main presence checking task"""
         if not self.initialized:
@@ -110,12 +123,10 @@ class OnlineAnnounce:
                     # This is a new online status
                     await self.announce_online(member, member_role, channel)
                     self.online_members.add(member_id)
-                    logger.info(f"✅ Announced {member.display_name} as online")
             else:
                 # Member is offline - remove from tracking
                 if member_id in self.online_members:
                     self.online_members.remove(member_id)
-                    logger.info(f"📴 {member.display_name} went offline")
                     
         except Exception as e:
             logger.error(f"❌ Error checking member {member.name}: {e}")
@@ -145,11 +156,6 @@ class OnlineAnnounce:
             # Add member avatar
             embed.set_thumbnail(url=member.display_avatar.url)
             
-            # Add member info
-            embed.add_field(name="Member", value=member.display_name, inline=True)
-            embed.add_field(name="Role", value=role_name, inline=True)
-            embed.add_field(name="Status", value=str(member.status).title(), inline=True)
-            
             # Send announcement
             await channel.send(embed=embed)
             
@@ -158,7 +164,6 @@ class OnlineAnnounce:
         except Exception as e:
             logger.error(f"❌ Error announcing {member.display_name}: {e}")
     
-    # Event listener for presence updates
     async def on_presence_update(self, before, after):
         """Handle presence updates in real-time"""
         if not self.initialized:
