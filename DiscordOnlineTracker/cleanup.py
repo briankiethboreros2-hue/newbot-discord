@@ -9,12 +9,13 @@ logger = logging.getLogger(__name__)
 
 # ======== INACTIVE MEMBER VOTE VIEW ========
 class InactiveMemberVoteView(discord.ui.View):
-    def __init__(self, member_id, member_name, days_inactive):
+    def __init__(self, member_id, member_name, days_inactive, cleanup_system=None):
         super().__init__(timeout=None)
         self.member_id = member_id
         self.member_name = member_name
         self.days_inactive = days_inactive
         self.vote_made = False
+        self.cleanup_system = cleanup_system
         
     @discord.ui.button(label="Demote", style=discord.ButtonStyle.danger, emoji="⬇️")
     async def demote_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -121,6 +122,12 @@ class InactiveMemberVoteView(discord.ui.View):
                     timestamp=datetime.now()
                 )
                 await interaction.channel.send(embed=embed)
+                
+                # Record the pardon in cleanup system
+                if self.cleanup_system:
+                    await self.cleanup_system.record_admin_pardon(member.id)
+                elif hasattr(interaction.client, 'cleanup_system'):
+                    await interaction.client.cleanup_system.record_admin_pardon(member.id)
                 
                 logger.info(f"Kept {member.name}'s role (voted by {admin_name})")
         except Exception as e:
@@ -406,6 +413,9 @@ class CleanupSystem:
         self.admin_channel_id = 1455138098437689387
         self.review_channel_id = 1454802873300025396
         
+        # Track when each member was last checked
+        self.member_last_check = {}  # {member_id: last_check_date}
+    
     def start_cleanup_task(self):
         """Start the cleanup task"""
         self.cleanup_task.start()
@@ -418,8 +428,8 @@ class CleanupSystem:
         # Check for ghost users (every day)
         await self.check_ghost_users()
         
-        # Check for inactive Impèrius members (every day)
-        await self.check_inactive_members()
+        # Check for inactive Impèrius members (every 15 days per member)
+        await self.check_inactive_members_15day_cycle()
         
         logger.info("✅ Cleanup task completed")
     
@@ -427,6 +437,122 @@ class CleanupSystem:
     async def before_cleanup_task(self):
         """Wait until bot is ready"""
         await self.bot.wait_until_ready()
+    
+    async def check_inactive_members_15day_cycle(self):
+        """Check for inactive Impèrius🔥 members - only checks each member every 15 days"""
+        try:
+            admin_channel = self.guild.get_channel(self.admin_channel_id)
+            attendance_channel = self.guild.get_channel(self.attendance_channel_id)
+            
+            if not admin_channel or not attendance_channel:
+                logger.error("❌ Required channels not found!")
+                return
+            
+            now = datetime.now()
+            imperius_role = self.guild.get_role(1437570031822176408)
+            
+            if not imperius_role:
+                logger.error("❌ Impèrius🔥 role not found!")
+                return
+            
+            logger.info(f"😴 Starting 15-day cycle check for {len(imperius_role.members)} Impèrius members...")
+            
+            members_checked = 0
+            members_skipped = 0
+            members_flagged = 0
+            
+            # Check each Impèrius member
+            for member in imperius_role.members:
+                if member.bot:
+                    continue
+                
+                member_id = member.id
+                last_check_date = self.member_last_check.get(member_id)
+                
+                # Only check if 15+ days since last check OR never checked before
+                should_check = False
+                
+                if last_check_date is None:
+                    # Never checked before - check now
+                    should_check = True
+                else:
+                    # Calculate days since last check
+                    days_since_last_check = (now - last_check_date).days
+                    if days_since_last_check >= 15:
+                        should_check = True
+                    else:
+                        # Skip - not time to check yet
+                        members_skipped += 1
+                        logger.debug(f"Skipping {member.name} - checked {days_since_last_check} days ago")
+                        continue
+                
+                if should_check:
+                    members_checked += 1
+                    
+                    # Determine if member was active since last check date
+                    was_active = False
+                    
+                    if last_check_date:
+                        # Check attendance channel for activity since last check
+                        was_active = await self.was_member_active_since(member, attendance_channel, last_check_date)
+                    else:
+                        # First time checking - check last 15 days
+                        fifteen_days_ago = now - timedelta(days=15)
+                        was_active = await self.was_member_active_since(member, attendance_channel, fifteen_days_ago)
+                    
+                    if not was_active:
+                        # Member inactive since last check - flag for demotion
+                        days_inactive = 15  # Default
+                        if last_check_date:
+                            days_inactive = (now - last_check_date).days
+                        
+                        # Check if already posted today
+                        already_posted = await self.is_user_already_posted_today(admin_channel, member.id, "inactive")
+                        if not already_posted:
+                            embed = discord.Embed(
+                                title=f"😴 Inactive Impèrius Member",
+                                description=f"**Member:** {member.mention} ({member.display_name})\n"
+                                          f"**Role:** Impèrius🔥\n"
+                                          f"**Days Inactive:** {days_inactive} days\n"
+                                          f"**Last Checked:** {last_check_date.strftime('%Y-%m-%d') if last_check_date else 'First check'}\n\n"
+                                          f"**Candidate for demotion to Inactive role**",
+                                color=discord.Color.orange(),
+                                timestamp=now
+                            )
+                            
+                            view = InactiveMemberVoteView(member.id, member.display_name, days_inactive, self)
+                            await admin_channel.send(embed=embed, view=view)
+                            
+                            members_flagged += 1
+                            logger.info(f"Flagged inactive member: {member.name} ({days_inactive} days since last check)")
+                            await asyncio.sleep(2)
+                    
+                    # Update last check date to TODAY (whether active or not)
+                    self.member_last_check[member_id] = now
+                    logger.debug(f"Updated last check for {member.name}: {now.strftime('%Y-%m-%d')}")
+            
+            logger.info(f"✅ 15-day cycle check completed: {members_checked} checked, {members_skipped} skipped, {members_flagged} flagged")
+            
+        except Exception as e:
+            logger.error(f"❌ Error checking inactive members (15-day cycle): {e}")
+    
+    async def was_member_active_since(self, member, attendance_channel, since_date):
+        """Check if member was active in attendance channel since given date"""
+        try:
+            async for message in attendance_channel.history(limit=100, after=since_date):
+                if message.author == self.bot.user and message.embeds:
+                    for embed in message.embeds:
+                        if embed.description and str(member.id) in embed.description:
+                            return True
+            return False
+        except Exception as e:
+            logger.error(f"Error checking member activity: {e}")
+            return False
+    
+    async def record_admin_pardon(self, member_id):
+        """Call this when admin pardons a member (from InactiveMemberVoteView.process_keep)"""
+        self.member_last_check[member_id] = datetime.now()
+        logger.info(f"Admin pardon recorded for member {member_id}, last check reset to today")
     
     async def check_ghost_users(self):
         """Check for users with no roles (ghosts) - posts to REVIEW channel"""
@@ -485,88 +611,6 @@ class CleanupSystem:
             
         except Exception as e:
             logger.error(f"❌ Error checking ghost users: {e}")
-    
-    async def check_inactive_members(self):
-        """Check for inactive Impèrius🔥 members - tracks via attendance channel (15 days)"""
-        try:
-            admin_channel = self.guild.get_channel(self.admin_channel_id)
-            attendance_channel = self.guild.get_channel(self.attendance_channel_id)
-            
-            if not admin_channel or not attendance_channel:
-                logger.error("❌ Required channels not found!")
-                return
-            
-            now = datetime.now()
-            imperius_role = self.guild.get_role(1437570031822176408)
-            
-            if not imperius_role:
-                logger.error("❌ Impèrius🔥 role not found!")
-                return
-            
-            logger.info(f"😴 Checking inactivity for {len(imperius_role.members)} Impèrius members...")
-            
-            # Get all attendance announcements from last 15 days
-            fifteen_days_ago = now - timedelta(days=15)
-            active_members = set()
-            
-            # Scan attendance channel for last 15 days
-            try:
-                async for message in attendance_channel.history(limit=1000, after=fifteen_days_ago):
-                    if message.author == self.bot.user and message.embeds:
-                        for embed in message.embeds:
-                            if embed.description:
-                                # Extract user mentions from description
-                                mentions = re.findall(r'<@!?(\d+)>', embed.description)
-                                for user_id in mentions:
-                                    active_members.add(int(user_id))
-            except Exception as e:
-                logger.error(f"❌ Error scanning attendance channel: {e}")
-            
-            logger.info(f"📊 Found {len(active_members)} unique members active in last 15 days")
-            
-            inactive_count = 0
-            
-            # Check each Impèrius member
-            for member in imperius_role.members:
-                if member.bot:
-                    continue
-                
-                # Check if member was active in last 15 days
-                if member.id not in active_members:
-                    # Member is inactive for 15+ days
-                    # Check if already posted
-                    already_posted = await self.is_user_already_posted_today(admin_channel, member.id, "inactive")
-                    if not already_posted:
-                        # Get exact days since last activity
-                        last_active = await self.get_last_activity_date(member, attendance_channel)
-                        days_inactive = 15  # Default to 15 if no activity found
-                        
-                        if last_active:
-                            days_inactive = (now - last_active).days
-                        
-                        if days_inactive >= 15:
-                            embed = discord.Embed(
-                                title=f"😴 Inactive Impèrius Member",
-                                description=f"**Member:** {member.mention} ({member.display_name})\n"
-                                          f"**Role:** Impèrius🔥\n"
-                                          f"**Days Inactive:** {days_inactive} days\n"
-                                          f"**Last Active:** {last_active.strftime('%Y-%m-%d') if last_active else 'Never'}\n\n"
-                                          f"**Candidate for demotion to Inactive role**",
-                                color=discord.Color.orange(),
-                                timestamp=now
-                            )
-                            
-                            view = InactiveMemberVoteView(member.id, member.display_name, days_inactive)
-                            await admin_channel.send(embed=embed, view=view)
-                            
-                            inactive_count += 1
-                            logger.info(f"Posted inactive member: {member.name} ({days_inactive} days)")
-                            await asyncio.sleep(2)
-            
-            logger.info(f"✅ Inactive member check completed: {inactive_count} found")
-            
-        except Exception as e:
-            logger.error(f"❌ Error checking inactive members: {e}")
     
     async def get_last_activity_date(self, member, attendance_channel):
         """Get the last date a member was announced online"""
