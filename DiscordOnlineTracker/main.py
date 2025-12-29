@@ -10,7 +10,7 @@ import time
 
 # Import our modules
 from recruitment import RecruitmentSystem
-from online_announce import OnlineAnnounceSystem
+from online_announce import OnlineAnnounce  # CHANGED: Import OnlineAnnounce instead of OnlineAnnounceSystem
 from cleanup import CleanupSystem
 from state_manager import StateManager  # Make sure this file exists
 
@@ -86,7 +86,7 @@ class ImperialBot(commands.Bot):
             
             # Initialize systems with the guild
             self.recruitment = RecruitmentSystem(self, self.main_guild, self.state)
-            self.online_announce = OnlineAnnounceSystem(self, self.main_guild, self.state)
+            self.online_announce = OnlineAnnounce(self, self.main_guild, self.state)  # CHANGED: OnlineAnnounce
             self.cleanup = CleanupSystem(self, self.main_guild, self.state)
             
             # Start cleanup task
@@ -199,7 +199,12 @@ class ImperialBot(commands.Bot):
         """Handle member status changes (online/offline)"""
         try:
             if self.online_announce:
-                await self.online_announce.check_online_status(before, after)
+                # Check if the OnlineAnnounce class has check_online_status method
+                if hasattr(self.online_announce, 'check_online_status'):
+                    await self.online_announce.check_online_status(before, after)
+                else:
+                    # If not, use the on_presence_update listener
+                    pass
         except Exception as e:
             logger.error(f"❌ Error in on_member_update: {e}")
             traceback.print_exc()
