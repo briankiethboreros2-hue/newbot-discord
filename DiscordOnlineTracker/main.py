@@ -49,7 +49,7 @@ signal.signal(signal.SIGTERM, handle_shutdown)
 # -----------------------
 def log_error(where, error, critical=False):
     """Enhanced error logging with backoff recommendations"""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now().strftime("%Y-%m-d %H:%M:%S")
     error_msg = f"💥 [{timestamp}] ERROR in {where}: {str(error)[:200]}"
     print(error_msg)
     
@@ -87,15 +87,15 @@ def global_error_handler(exc_type, exc_value, exc_traceback):
 sys.excepthook = global_error_handler
 
 # -----------------------
-# CONFIGURATION
+# CONFIGURATION (UPDATED WITH NEW CHANNEL ID)
 # -----------------------
 CHANNELS = {
     "main": 1437768842871832597,
     "recruit": 1437568595977834590,
     "reminder": 1369091668724154419,
-    "staff_review": 1437586858417852438,
+    "staff_review": 1455138098437689387,  # UPDATED PERMANENTLY
     "cleanup": 1454802873300025396,
-    "admin": 1437586858417852438,
+    "admin": 1455138098437689387,        # UPDATED PERMANENTLY
     "welcome": 1369091668724154419,
     "call": 1437575744824934531
 }
@@ -546,18 +546,30 @@ async def cleanup_background_task():
     # Initial delay to let bot stabilize
     await asyncio.sleep(30)
     
+    # Cooldown tracker to prevent spamming
+    last_cleanup_run = 0
+    CLEANUP_COOLDOWN = 21600  # 6 hours between runs
+    
     while not client.is_closed() and not shutdown_flag:
         try:
+            current_time = time.time()
+            
+            # Only run every 6 hours minimum
+            if current_time - last_cleanup_run < CLEANUP_COOLDOWN:
+                # Wait 1 hour and check again
+                await asyncio.sleep(3600)
+                continue
+            
             if cleanup_system and CLEANUP_ENABLED:
-                # Run cleanup every 12 hours (reduced frequency)
+                print(f"🕒 Running scheduled cleanup check (cooldown: {CLEANUP_COOLDOWN/3600}h)...")
                 for guild in client.guilds:
                     await cleanup_system.run_cleanup_check(guild)
+                
+                last_cleanup_run = current_time
+                print(f"✅ Cleanup check completed. Next run in {CLEANUP_COOLDOWN/3600} hours.")
             
-            # Sleep for 12 hours, checking for shutdown every minute
-            for _ in range(12 * 60):
-                if shutdown_flag or client.is_closed():
-                    break
-                await asyncio.sleep(60)
+            # Sleep for 1 hour before checking cooldown again
+            await asyncio.sleep(3600)
                 
         except Exception as e:
             log_error("cleanup_background_task", e)
@@ -700,7 +712,7 @@ async def on_member_join(member):
             
             await dm.send("✅ Thank you! Your application has been sent to our Staff. Please wait for review.")
             
-            # Send to staff channel
+            # Send to staff channel (using UPDATED channel ID)
             staff_ch = client.get_channel(CHANNELS["staff_review"])
             if staff_ch:
                 embed = discord.Embed(
@@ -753,6 +765,7 @@ async def on_member_join(member):
 
 @client.event
 async def on_raw_reaction_add(payload):
+    """Handle reactions for both recruitment AND cleanup system"""
     if shutdown_flag or payload.user_id == client.user.id:
         return
     
@@ -761,74 +774,80 @@ async def on_raw_reaction_add(payload):
         return
     
     reactor = guild.get_member(payload.user_id)
-    if not reactor or not safety_wrappers.is_admin(reactor):
+    if not reactor:
         return
     
-    # Handle Recruitment Voting
-    emoji_str = str(payload.emoji)
-    if emoji_str not in [UPVOTE_EMOJI, DOWNVOTE_EMOJI]:
-        return
+    # Handle Recruitment Voting (admins only)
+    if safety_wrappers.is_admin(reactor):
+        emoji_str = str(payload.emoji)
+        if emoji_str in [UPVOTE_EMOJI, DOWNVOTE_EMOJI]:
+            for uid, entry in list(pending_recruits.items()):
+                if (entry.get("review_message_id") == payload.message_id and 
+                    not entry.get("resolved", False) and
+                    entry.get("under_review", False)):
+                    
+                    applicant = guild.get_member(int(uid))
+                    staff_ch = client.get_channel(CHANNELS["staff_review"])
+                    
+                    if not applicant:
+                        print(f"⚠️ Applicant {uid} not found in guild")
+                        entry["resolved"] = True
+                        entry["status"] = "left_guild"
+                        save_data()
+                        continue
+                    
+                    if emoji_str == UPVOTE_EMOJI:
+                        success, msg = await safety_wrappers.assign_role_safe(
+                            applicant, 
+                            ROLES["imperius"], 
+                            reason=f"Accepted by {reactor.display_name}"
+                        )
+                        
+                        if success:
+                            entry["resolved"] = True
+                            entry["status"] = "accepted"
+                            if staff_ch:
+                                await staff_ch.send(
+                                    f"✅ {applicant.mention} has been **ACCEPTED** by {reactor.mention}."
+                                )
+                            try:
+                                await applicant.send("🎉 **Congratulations!** You have been accepted into **Impèrius🔥**!")
+                            except:
+                                pass
+                        else:
+                            if staff_ch:
+                                await staff_ch.send(
+                                    f"❌ Failed to assign role to {applicant.mention}: {msg}"
+                                )
+                    
+                    elif emoji_str == DOWNVOTE_EMOJI:
+                        success, msg = await safety_wrappers.kick_member_safe(
+                            applicant,
+                            reason=f"Rejected by {reactor.display_name}"
+                        )
+                        
+                        if success:
+                            entry["resolved"] = True
+                            entry["status"] = "rejected"
+                            if staff_ch:
+                                await staff_ch.send(
+                                    f"❌ {applicant.mention} was **REJECTED** by {reactor.mention}."
+                                )
+                        else:
+                            if staff_ch:
+                                await staff_ch.send(
+                                    f"⚠️ Failed to kick {applicant.mention}: {msg}"
+                                )
+                    
+                    save_data()
+                    return  # Stop after handling recruitment vote
     
-    for uid, entry in list(pending_recruits.items()):
-        if (entry.get("review_message_id") == payload.message_id and 
-            not entry.get("resolved", False) and
-            entry.get("under_review", False)):
-            
-            applicant = guild.get_member(int(uid))
-            staff_ch = client.get_channel(CHANNELS["staff_review"])
-            
-            if not applicant:
-                print(f"⚠️ Applicant {uid} not found in guild")
-                entry["resolved"] = True
-                entry["status"] = "left_guild"
-                save_data()
-                continue
-            
-            if emoji_str == UPVOTE_EMOJI:
-                success, msg = await safety_wrappers.assign_role_safe(
-                    applicant, 
-                    ROLES["imperius"], 
-                    reason=f"Accepted by {reactor.display_name}"
-                )
-                
-                if success:
-                    entry["resolved"] = True
-                    entry["status"] = "accepted"
-                    if staff_ch:
-                        await staff_ch.send(
-                            f"✅ {applicant.mention} has been **ACCEPTED** by {reactor.mention}."
-                        )
-                    try:
-                        await applicant.send("🎉 **Congratulations!** You have been accepted into **Impèrius🔥**!")
-                    except:
-                        pass
-                else:
-                    if staff_ch:
-                        await staff_ch.send(
-                            f"❌ Failed to assign role to {applicant.mention}: {msg}"
-                        )
-            
-            elif emoji_str == DOWNVOTE_EMOJI:
-                success, msg = await safety_wrappers.kick_member_safe(
-                    applicant,
-                    reason=f"Rejected by {reactor.display_name}"
-                )
-                
-                if success:
-                    entry["resolved"] = True
-                    entry["status"] = "rejected"
-                    if staff_ch:
-                        await staff_ch.send(
-                            f"❌ {applicant.mention} was **REJECTED** by {reactor.mention}."
-                        )
-                else:
-                    if staff_ch:
-                        await staff_ch.send(
-                            f"⚠️ Failed to kick {applicant.mention}: {msg}"
-                        )
-            
-            save_data()
-            break
+    # Handle Cleanup System Reactions (admins only)
+    if safety_wrappers.is_admin(reactor) and cleanup_system:
+        # Check if it's in cleanup channel
+        cleanup_ch_id = CHANNELS.get("cleanup")
+        if payload.channel_id == cleanup_ch_id:
+            await cleanup_system.handle_demotion_reaction(payload)
 
 @client.event
 async def on_presence_update(before, after):
@@ -912,7 +931,8 @@ async def on_message(message):
                     embed.add_field(
                         name="Cleanup System",
                         value=f"Users: {len(getattr(cleanup_system, 'user_activity', {}))}\n"
-                              f"Demoted: {len(getattr(cleanup_system, 'demoted_users', {}))}",
+                              f"Demoted: {len(getattr(cleanup_system, 'demoted_users', {}))}\n"
+                              f"Last Run: {datetime.fromtimestamp(getattr(cleanup_system, 'last_cleanup_run', 0)).strftime('%Y-%m-%d %H:%M') if getattr(cleanup_system, 'last_cleanup_run', 0) > 0 else 'Never'}",
                         inline=False
                     )
                 
