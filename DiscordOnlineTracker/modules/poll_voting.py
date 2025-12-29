@@ -1,87 +1,37 @@
-"""
-Poll Voting System for Discord Bot
-Optional - Use if you want polls instead of buttons
-"""
-
 import discord
-import asyncio
-import time
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-import json
-import os
+from discord.ext import commands
+from datetime import datetime
+from typing import Dict, List, Set
 
-class PollVoting:
-    """Poll-based voting system (optional feature)"""
+class PollingVote(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.active_polls = {}  # message_id: poll_data
+        self.user_votes = {}  # user_id: set(message_ids)
     
-    def __init__(self, client):
-        self.client = client
-        self.active_polls: Dict[int, Dict] = {}
-        self.data_dir = "data"
-        os.makedirs(self.data_dir, exist_ok=True)
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        """Track button interactions for voting"""
+        if interaction.type != discord.InteractionType.component:
+            return
         
-    async def create_poll(self, channel, question, options, duration_minutes=60, allowed_voters=None):
-        """Create a simple poll - optional feature"""
-        try:
-            if len(options) < 2 or len(options) > 10:
-                return None
-            
-            poll_text = f"**📊 POLL: {question}**\n\n"
-            for i, option in enumerate(options):
-                poll_text += f"{i+1}. {option}\n"
-            
-            poll_text += f"\n⏰ Poll closes in {duration_minutes} minutes"
-            
-            if allowed_voters:
-                poll_text += f"\n👑 Voting restricted to admins"
-            
-            message = await channel.send(poll_text)
-            
-            # Add number reactions
-            for i in range(len(options)):
-                await message.add_reaction(f"{i+1}\N{COMBINING ENCLOSING KEYCAP}")
-            
-            # Schedule auto-close
-            asyncio.create_task(
-                self._close_poll_after_delay(message.id, channel, duration_minutes * 60)
-            )
-            
-            return message
-            
-        except Exception as e:
-            print(f"❌ Poll creation error: {e}")
-            return None
-    
-    async def _close_poll_after_delay(self, message_id, channel, delay_seconds):
-        """Close poll after delay"""
-        await asyncio.sleep(delay_seconds)
+        # Check if it's a voting button
+        custom_id = interaction.data.get('custom_id', '')
+        if not custom_id:
+            return
         
-        try:
-            message = await channel.fetch_message(message_id)
-            
-            # Count votes
-            results = {}
-            for reaction in message.reactions:
-                if hasattr(reaction.emoji, 'name') and reaction.emoji.name[0].isdigit():
-                    option_num = int(reaction.emoji.name[0])
-                    results[option_num] = reaction.count - 1  # Subtract bot's reaction
-            
-            # Create results embed
-            if results:
-                embed = discord.Embed(
-                    title="📊 Poll Results",
-                    color=discord.Color.green(),
-                    timestamp=datetime.now()
-                )
+        # Extract user_id from custom_id if present
+        parts = custom_id.split('_')
+        if len(parts) >= 3:
+            try:
+                target_user_id = int(parts[-1])
+                action_type = '_'.join(parts[:-1])
                 
-                for option_num, votes in sorted(results.items()):
-                    embed.add_field(
-                        name=f"Option {option_num}",
-                        value=f"{votes} votes",
-                        inline=True
-                    )
+                # Log the vote
+                print(f"[VOTE] {interaction.user} voted {action_type} on user {target_user_id}")
                 
-                await channel.send(embed=embed)
-            
-        except Exception as e:
-            print(f"❌ Poll closing error: {e}")
+            except ValueError:
+                pass
+
+def setup(bot):
+    bot.add_cog(PollingVote(bot))
