@@ -3,23 +3,28 @@ from discord.ext import commands, tasks
 import asyncio
 from datetime import datetime, timedelta
 import logging
-from config import CHANNELS, ROLES, VOTING_ROLES, INTERVIEW_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
 def has_voting_role(member):
     """Check if member has any of the voting roles"""
+    voting_roles = [
+        1389835747040694332,  # Cᥣᥲᥒ Mᥲstᥱr🌟
+        1437578521374363769,  # Queen❤️‍🔥
+        1438420490455613540,  # cute ✨
+        1437572916005834793,  # OG-Impèrius🐦‍🔥
+    ]
+    
     member_role_ids = [role.id for role in member.roles]
-    return any(role_id in member_role_ids for role_id in VOTING_ROLES)
+    return any(role_id in member_role_ids for role_id in voting_roles)
 
 class RecruitmentSystem:
-    def __init__(self, bot, guild):  # REMOVE state parameter
+    def __init__(self, bot, guild, state):
         self.bot = bot
         self.guild = guild
+        self.state = state
         
-        # Store locally instead of using state manager
-        self.active_interviews = {}
-        self.interview_timeouts = {}
+        # Store admin review messages
         self.admin_review_messages = {}
         self.tryout_vote_messages = {}
         
@@ -35,13 +40,19 @@ class RecruitmentSystem:
         # Start cleanup task for timed out interviews
         self.cleanup_interviews.start()
     
+    def cleanup_member_data(self, user_id):
+        """Clean up data for a member who left"""
+        self.state.remove_active_interview(user_id)
+        if user_id in self.state.interview_timeouts:
+            del self.state.interview_timeouts[user_id]
+    
     @tasks.loop(minutes=1)
     async def cleanup_interviews(self):
         """Clean up interviews that have timed out"""
         now = datetime.now()
         to_remove = []
         
-        # Get copy of active interviews to avoid modification during iteration
+        # Get copy to avoid modification during iteration
         active_interviews = self.state.active_interviews.copy()
         
         for user_id, interview_data in active_interviews.items():
@@ -49,21 +60,23 @@ class RecruitmentSystem:
                 # Handle both datetime and string formats
                 start_time = interview_data['start_time']
                 if isinstance(start_time, str):
-                    start_time = datetime.fromisoformat(start_time)
+                    try:
+                        start_time = datetime.fromisoformat(start_time)
+                    except:
+                        to_remove.append(user_id)
+                        continue
                 
                 time_diff = now - start_time
-                if time_diff.total_seconds() > INTERVIEW_TIMEOUT:
-                    to_remove.append((user_id, interview_data))
+                if time_diff.total_seconds() > 300:  # 5 minutes
+                    to_remove.append(user_id)
+                    # Notify admins about timeout
+                    await self.notify_interview_timeout(user_id, interview_data)
         
-        for user_id, interview_data in to_remove:
-            # Notify admins about timeout
-            await self.notify_interview_timeout(user_id, interview_data)
-            
-            # Remove from state
+        for user_id in to_remove:
             self.state.remove_active_interview(user_id)
-            
-            # Clean up channel messages
-            await self.cleanup_channel_messages(user_id)
+            if user_id in self.state.interview_timeouts:
+                del self.state.interview_timeouts[user_id]
+            self.state.add_failed_interview(user_id)
     
     @cleanup_interviews.before_loop
     async def before_cleanup_interviews(self):
@@ -73,13 +86,8 @@ class RecruitmentSystem:
     async def handle_new_member(self, member):
         """Handle new member joining - INTERVIEW EVERYONE"""
         try:
-            # Check if already in active interview
-            if self.state.get_active_interview(member.id):
-                logger.info(f"⏭️ {member.name} already has active interview")
-                return
-            
             # Get the recruit confirmation channel
-            channel = self.bot.get_channel(CHANNELS["RECRUIT_CONFIRM"])
+            channel = self.bot.get_channel(1437568595977834590)  # RECRUIT_CONFIRM_CHANNEL
             if not channel:
                 logger.error("Recruit confirmation channel not found!")
                 return
@@ -91,7 +99,7 @@ class RecruitmentSystem:
             dm_instruction = await channel.send(f"Please check your DMs {member.mention}")
             
             # Store message data in state
-            timeout_data = {
+            self.state.interview_timeouts[member.id] = {
                 'welcome_msg': welcome_msg.id,
                 'dm_instruction': dm_instruction.id,
                 'channel_id': channel.id,
@@ -100,10 +108,7 @@ class RecruitmentSystem:
                 'timestamp': datetime.now().isoformat()
             }
             
-            # Update state
-            self.state.interview_timeouts[member.id] = timeout_data
-            
-            # Start DM interview
+            # Start DM interview (EVEN FOR RETURNEE)
             await self.start_dm_interview(member)
             
         except Exception as e:
@@ -209,6 +214,7 @@ class RecruitmentSystem:
             await message.channel.send("❌ Interview cancelled.")
             self.state.remove_active_interview(user_id)
             await self.cleanup_channel_messages(user_id)
+            self.state.add_failed_interview(user_id)
             return
         
         # Update interview data
@@ -266,6 +272,9 @@ class RecruitmentSystem:
         except:
             pass
         
+        # Mark as completed
+        self.state.add_completed_interview(user_id)
+        
         # Send to admin channel for review
         await self.send_to_admin_review(member, interview['answers'], is_returnee)
         
@@ -275,7 +284,7 @@ class RecruitmentSystem:
     async def send_to_admin_review(self, member, answers, is_returnee=False):
         """Send interview results to admin channel"""
         try:
-            channel = self.bot.get_channel(CHANNELS["ADMIN"])
+            channel = self.bot.get_channel(1455138098437689387)  # ADMIN_CHANNEL
             if not channel:
                 logger.error("Admin channel not found!")
                 return
@@ -310,7 +319,7 @@ class RecruitmentSystem:
     async def notify_interview_timeout(self, user_id, interview_data):
         """Notify admins when interview times out"""
         try:
-            channel = self.bot.get_channel(CHANNELS["ADMIN"])
+            channel = self.bot.get_channel(1455138098437689387)  # ADMIN_CHANNEL
             if not channel:
                 return
             
@@ -339,7 +348,7 @@ class RecruitmentSystem:
     async def notify_dm_blocked(self, member):
         """Notify when user has DMs blocked"""
         try:
-            channel = self.bot.get_channel(CHANNELS["ADMIN"])
+            channel = self.bot.get_channel(1455138098437689387)  # ADMIN_CHANNEL
             if not channel:
                 return
             
@@ -384,7 +393,7 @@ class RecruitmentSystem:
                 except Exception as e:
                     logger.error(f"Error deleting message: {e}")
             
-            # Clean up data
+            # Clean up data from state
             if user_id in self.state.interview_timeouts:
                 del self.state.interview_timeouts[user_id]
             
@@ -392,7 +401,7 @@ class RecruitmentSystem:
             logger.error(f"Error cleaning up messages: {e}")
 
 class TryoutVoteView(discord.ui.View):
-    """View for admin tryout voting with member existence check"""
+    """View for admin tryout voting"""
     def __init__(self, bot, member=None, answers=None, is_returnee=False):
         super().__init__(timeout=None)
         self.bot = bot
@@ -411,14 +420,6 @@ class TryoutVoteView(discord.ui.View):
     
     async def handle_vote(self, interaction, vote_type):
         """Handle admin vote"""
-        # Check if member still exists in guild
-        if not self.member or not self.member.guild.get_member(self.member.id):
-            await interaction.response.send_message(
-                "❌ This member is no longer in the server.",
-                ephemeral=True
-            )
-            return
-        
         # Check if user has voting role
         if not has_voting_role(interaction.user):
             await interaction.response.send_message(
@@ -438,7 +439,7 @@ class TryoutVoteView(discord.ui.View):
         admin_name = interaction.user.display_name
         
         # Send notification in admin channel
-        channel = self.bot.get_channel(CHANNELS["ADMIN"])
+        channel = self.bot.get_channel(1455138098437689387)  # ADMIN_CHANNEL
         if channel:
             if vote_type == "tryout":
                 message = f"👑 **{admin_name}** ordered the tryout for :military_helmet: {self.member.mention}"
@@ -459,7 +460,7 @@ class TryoutVoteView(discord.ui.View):
     async def send_to_review_channel(self):
         """Send to review channel for tryout decision"""
         try:
-            channel = self.bot.get_channel(CHANNELS["REVIEW"])
+            channel = self.bot.get_channel(1454802873300025396)  # REVIEW_CHANNEL
             if not channel:
                 logger.error("Review channel not found!")
                 return
@@ -483,7 +484,7 @@ class TryoutVoteView(discord.ui.View):
             logger.error(f"Error sending to review channel: {e}")
 
 class TryoutDecisionView(discord.ui.View):
-    """View for tryout pass/fail decision with member existence check"""
+    """View for tryout pass/fail decision"""
     def __init__(self, bot, member=None, answers=None, is_returnee=False):
         super().__init__(timeout=None)
         self.bot = bot
@@ -502,14 +503,6 @@ class TryoutDecisionView(discord.ui.View):
     
     async def handle_decision(self, interaction, decision):
         """Handle tryout decision"""
-        # Check if member still exists in guild
-        if not self.member or not self.member.guild.get_member(self.member.id):
-            await interaction.response.send_message(
-                "❌ This member is no longer in the server.",
-                ephemeral=True
-            )
-            return
-        
         # Check if user has voting role
         if not has_voting_role(interaction.user):
             await interaction.response.send_message(
@@ -527,7 +520,7 @@ class TryoutDecisionView(discord.ui.View):
         admin_name = interaction.user.display_name
         
         # Send decision to admin channel
-        admin_channel = self.bot.get_channel(CHANNELS["ADMIN"])
+        admin_channel = self.bot.get_channel(1455138098437689387)  # ADMIN_CHANNEL
         if admin_channel:
             message = f"👑 **{admin_name}** {decision} recruit :military_helmet: {self.member.mention}"
             if self.is_returnee:
@@ -543,13 +536,8 @@ class TryoutDecisionView(discord.ui.View):
     async def handle_passed_recruit(self, admin_name):
         """Handle passed recruit"""
         try:
-            # Check if member still exists
-            if not self.member.guild.get_member(self.member.id):
-                logger.error(f"Member {self.member.name} no longer in guild")
-                return
-            
             # Give Impèrius🔥 role (remove other roles if returnee)
-            imperius_role = self.member.guild.get_role(ROLES["IMPERIUS"])
+            imperius_role = self.member.guild.get_role(1437570031822176408)  # IMPERIUS_ROLE
             
             if imperius_role:
                 # Remove any existing Impèrius role if returnee
@@ -558,8 +546,8 @@ class TryoutDecisionView(discord.ui.View):
                     roles_to_remove = []
                     for role in self.member.roles:
                         if role.id in [
-                            ROLES["IMPERIUS"],
-                            ROLES["INACTIVE"],
+                            1437570031822176408,  # Impèrius🔥
+                            1454803208995340328,  # Inactive role
                         ]:
                             roles_to_remove.append(role)
                     
@@ -574,7 +562,7 @@ class TryoutDecisionView(discord.ui.View):
                     logger.info(f"ℹ️ {self.member.name} already has Impèrius🔥 role")
             
             # Announce in tryout result channel
-            channel = self.bot.get_channel(CHANNELS["TRYOUT_RESULT"])
+            channel = self.bot.get_channel(1455205385463009310)  # TRYOUT_RESULT_CHANNEL
             if channel:
                 title = "🎉 New Member Joins Impèrius!"
                 if self.is_returnee:
