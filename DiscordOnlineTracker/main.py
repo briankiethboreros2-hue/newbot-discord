@@ -1,4 +1,4 @@
-# STABLE VERSION - BOT IN MAIN THREAD WITH ALL STABILITY FIXES
+# STABLE VERSION - BOT IN MAIN THREAD WITH ALL STABILITY FIXES + RENDER MODULE FIX
 import threading
 import discord
 import os
@@ -13,7 +13,9 @@ import signal
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
-# Import keep_alive FIRST
+# -----------------------
+# KEEP ALIVE IMPORT
+# -----------------------
 try:
     from keep_alive import app, start_keep_alive
     KEEP_ALIVE_AVAILABLE = True
@@ -22,64 +24,48 @@ except ImportError:
     KEEP_ALIVE_AVAILABLE = False
 
 # -----------------------
-# 🛡️ STABILITY CONFIGURATION
+# STABILITY CONFIGURATION
 # -----------------------
 CLEANUP_ENABLED = True
 MAX_CLEANUP_RETRIES = 3
 SAVE_RETRY_COUNT = 3
-
-# Global shutdown flag
 shutdown_flag = False
 connection_attempts = 0
 MAX_CONNECTION_ATTEMPTS = 3
 
 def handle_shutdown(signum, frame):
-    """Handle graceful shutdown"""
     global shutdown_flag
     print(f"\n🛑 Received shutdown signal ({signum}), saving data...")
     shutdown_flag = True
-    # Don't exit immediately, let the bot clean up
 
-# Register signal handlers
 signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
 # -----------------------
-# ENHANCED ERROR HANDLING
+# ERROR LOGGING
 # -----------------------
 def log_error(where, error, critical=False):
-    """Enhanced error logging with backoff recommendations"""
-    timestamp = datetime.now().strftime("%Y-%m-d %H:%M:%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     error_msg = f"💥 [{timestamp}] ERROR in {where}: {str(error)[:200]}"
     print(error_msg)
-    
-    # Add recommendation for rate limits
     if "429" in str(error) or "rate limit" in str(error).lower():
-        print("⚠️  RATE LIMIT DETECTED - Recommendations:")
-        print("    1. Wait at least 5 minutes before restarting")
-        print("    2. Check if multiple bot instances are running")
-        print("    3. Reduce API call frequency")
-    
-    # Log to file with rotation
+        print("⚠️  RATE LIMIT DETECTED - Recommendations: Wait 5min before restarting, check multiple instances")
     try:
         log_file = "bot_errors.log"
-        if os.path.exists(log_file) and os.path.getsize(log_file) > 5 * 1024 * 1024:  # 5MB
+        if os.path.exists(log_file) and os.path.getsize(log_file) > 5*1024*1024:
             rotate_time = datetime.now().strftime("%Y%m%d_%H%M%S")
             os.rename(log_file, f"bot_errors_{rotate_time}.log")
-        
         with open(log_file, "a") as f:
             f.write(error_msg + "\n")
             if critical:
                 traceback.print_exc(file=f)
-            f.write("-" * 50 + "\n")
+            f.write("-"*50+"\n")
     except Exception as e:
         print(f"Failed to write to log file: {e}")
-    
     if critical:
         traceback.print_exc()
 
 def global_error_handler(exc_type, exc_value, exc_traceback):
-    """Global exception handler"""
     if issubclass(exc_type, KeyboardInterrupt):
         return
     log_error("GLOBAL", f"{exc_type.__name__}: {exc_value}", critical=True)
@@ -87,15 +73,15 @@ def global_error_handler(exc_type, exc_value, exc_traceback):
 sys.excepthook = global_error_handler
 
 # -----------------------
-# CONFIGURATION (UPDATED WITH NEW CHANNEL ID)
+# CONFIGURATION
 # -----------------------
 CHANNELS = {
     "main": 1437768842871832597,
     "recruit": 1437568595977834590,
     "reminder": 1369091668724154419,
-    "staff_review": 1455138098437689387,  # UPDATED PERMANENTLY
+    "staff_review": 1455138098437689387,
     "cleanup": 1454802873300025396,
-    "admin": 1455138098437689387,        # UPDATED PERMANENTLY
+    "admin": 1455138098437689387,
     "welcome": 1369091668724154419,
     "call": 1437575744824934531
 }
@@ -109,13 +95,9 @@ ROLES = {
 }
 
 ADMIN_ROLES = [
-    1389835747040694332,  # clan_master
-    1437578521374363769,  # queen
-    1437572916005834793,  # og_imperius
-    1438420490455613540   # Additional admin role
+    1389835747040694332, 1437578521374363769, 1437572916005834793, 1438420490455613540
 ]
 
-# Configuration for modules
 CLEANUP_CONFIG = {
     'channels': CHANNELS,
     'roles': ROLES,
@@ -127,30 +109,28 @@ STATE_FILE = "reminder_state.json"
 PENDING_FILE = "pending_recruits.json"
 JOIN_TRACKING_FILE = "member_join_tracking.json"
 
-# Recruitment questions
 RECRUIT_QUESTIONS = [
-    "1️⃣ Since you agreed to our terms and have read the rules, that also states we conduct clan tryouts. Do you agree to participate? (yes or no)",
-    "2️⃣ We require CCN 1 week after the day you joined or got accepted, failed to comply with the requirements might face with penalty, What will be your future in-game name? (e.g., IM-Ryze)",
-    "3️⃣ Our clan encourage members to improve, our members, OGs and Admins are always vocal when it comes to play making and correction of members. We are open so you can express yourself and also suggest, Are you open to communication about your personal gameplay and others suggestions? (yes or no)",
-    "4️⃣ We value team chemistry, communication and overall team improvements so we prioritize playing with clan members than playing with others. so are you? (yes or no)",
-    "5️⃣ We understand that sometimes there will be busy days and other priorities, we do have members who are working and also studying, are you working or a student?"
+    "1️⃣ Since you agreed to our terms and have read the rules, do you agree to participate? (yes or no)",
+    "2️⃣ We require CCN 1 week after joining, what will be your future in-game name? (e.g., IM-Ryze)",
+    "3️⃣ Are you open to communication about your gameplay and suggestions? (yes or no)",
+    "4️⃣ Do you prioritize playing with clan members? (yes or no)",
+    "5️⃣ Are you working or a student?"
 ]
 
 UPVOTE_EMOJI = "👍🏻"
 DOWNVOTE_EMOJI = "👎🏻"
 
 REMINDERS = [
-    {"title": "🟢 Activity Reminder", "description": "Members must keep their status set only to \"Online\" while active."},
-    {"title": "🧩 IGN Format", "description": "All members must use the official clan format: IM-(Your IGN)."},
-    {"title": "🔊 Voice Channel Reminder", "description": "Members online must join the Public Call channel."}
+    {"title": "🟢 Activity Reminder", "description": "Members must keep status Online while active."},
+    {"title": "🧩 IGN Format", "description": "All members must use official clan format: IM-(Your IGN)."},
+    {"title": "🔊 Voice Channel Reminder", "description": "Members must join Public Call channel while online."}
 ]
 
 # -----------------------
-# 🛡️ ENHANCED SAFETY WRAPPERS
+# SAFETY WRAPPERS
 # -----------------------
 class CircuitBreaker:
-    """Circuit breaker for rate-limited operations"""
-    def __init__(self, failure_threshold=3, reset_timeout=300):  # Increased to 5 minutes
+    def __init__(self, failure_threshold=3, reset_timeout=300):
         self.failure_threshold = failure_threshold
         self.reset_timeout = reset_timeout
         self.failures = 0
@@ -159,13 +139,11 @@ class CircuitBreaker:
     
     def can_execute(self):
         if self.state == "OPEN":
-            current_time = time.time()
-            if current_time - self.last_failure_time > self.reset_timeout:
-                print(f"🔁 Circuit breaker reset after {self.reset_timeout}s")
+            if time.time() - self.last_failure_time > self.reset_timeout:
                 self.state = "HALF_OPEN"
                 self.failures = 0
+                print(f"🔁 Circuit breaker reset after {self.reset_timeout}s")
                 return True
-            print(f"⏳ Circuit breaker OPEN - {int(self.reset_timeout - (current_time - self.last_failure_time))}s remaining")
             return False
         return True
     
@@ -179,137 +157,92 @@ class CircuitBreaker:
         self.failures += 1
         self.last_failure_time = time.time()
         if self.failures >= self.failure_threshold:
-            print(f"⚠️ CIRCUIT BREAKER OPENED due to {self.failures} failures")
             self.state = "OPEN"
+            print(f"⚠️ CIRCUIT BREAKER OPENED due to {self.failures} failures")
 
 class SafetyWrappers:
     def __init__(self, client):
         self.client = client
         self.last_kick_time = 0
-        self.kick_cooldown = 5.0  # Increased cooldown
+        self.kick_cooldown = 5.0
         self.last_role_assignment = 0
-        self.role_cooldown = 2.0  # Increased cooldown
-        
-        # Circuit breakers
+        self.role_cooldown = 2.0
         self.kick_circuit = CircuitBreaker(failure_threshold=2, reset_timeout=300)
         self.role_circuit = CircuitBreaker(failure_threshold=3, reset_timeout=300)
-        self.api_circuit = CircuitBreaker(failure_threshold=5, reset_timeout=600)  # 10 minutes for API
-        
-        # API rate limiting
+        self.api_circuit = CircuitBreaker(failure_threshold=5, reset_timeout=600)
         self.api_calls = []
-        self.max_api_calls = 40  # Reduced from 45 to stay safer
+        self.max_api_calls = 40
         self.api_window = 5
-        
-        # Operations tracking
         self.in_progress_operations = {}
         self.last_operation_time = 0
-        self.operation_cooldown = 1.0  # Minimum time between any operations
-    
+        self.operation_cooldown = 1.0
+
     async def check_rate_limit(self):
-        """Check and enforce Discord API rate limits with cooldown"""
         if not self.api_circuit.can_execute():
             raise Exception("API circuit breaker is open")
-        
         current_time = time.time()
-        
-        # Cooldown between operations
         if current_time - self.last_operation_time < self.operation_cooldown:
             await asyncio.sleep(self.operation_cooldown - (current_time - self.last_operation_time))
-        
-        # Remove calls older than our window
         self.api_calls = [t for t in self.api_calls if current_time - t < self.api_window]
-        
-        # If we're approaching the limit, wait
         if len(self.api_calls) >= self.max_api_calls:
             oldest_call = self.api_calls[0]
-            wait_time = self.api_window - (current_time - oldest_call) + 0.1  # Add buffer
+            wait_time = self.api_window - (current_time - oldest_call) + 0.1
             if wait_time > 0:
-                print(f"⏱️ Rate limit approaching, waiting {wait_time:.1f}s")
                 await asyncio.sleep(wait_time)
-                self.api_calls = []  # Reset after waiting
-        
-        # Record this call
+                self.api_calls = []
         self.api_calls.append(current_time)
         self.last_operation_time = current_time
         self.api_circuit.record_success()
-    
+
     async def safe_operation(self, operation_key, timeout=30):
-        """Ensure only one operation of each type runs at a time"""
         if operation_key in self.in_progress_operations:
             return False, "Operation already in progress"
-        
         self.in_progress_operations[operation_key] = True
         start_time = time.time()
-        
         try:
-            # Check rate limits
             await self.check_rate_limit()
             return True, "Ready"
         except Exception as e:
             return False, str(e)
         finally:
-            # Cleanup if operation takes too long
-            if time.time() - start_time > timeout:
-                print(f"⚠️ Operation {operation_key} took too long, cleaning up")
-                if operation_key in self.in_progress_operations:
-                    del self.in_progress_operations[operation_key]
-    
+            if time.time() - start_time > timeout and operation_key in self.in_progress_operations:
+                del self.in_progress_operations[operation_key]
+
     async def assign_role_safe(self, member, role_id, reason=""):
-        """Safely assign role with enhanced error handling"""
         if not member or not role_id:
             return False, "Invalid parameters"
-        
         operation_key = f"role_{member.id}_{role_id}"
         can_proceed, msg = await self.safe_operation(operation_key)
         if not can_proceed:
             return False, msg
-        
         try:
             if not self.role_circuit.can_execute():
-                return False, "Role circuit breaker open - too many failures"
-            
+                return False, "Role circuit breaker open"
             guild = member.guild
             role = guild.get_role(int(role_id))
             if not role:
                 self.role_circuit.record_failure()
                 return False, f"Role not found (ID: {role_id})"
-            
             if role in member.roles:
                 return True, "Already has role"
-            
-            # Permission checks
             bot_member = guild.get_member(self.client.user.id)
             if not bot_member.guild_permissions.manage_roles:
                 return False, "Bot lacks manage_roles permission"
-            
             if role.position >= bot_member.top_role.position:
                 return False, f"Bot's role is not high enough to assign {role.name}"
-            
-            # Rate limiting between operations
             current_time = time.time()
             if current_time - self.last_role_assignment < self.role_cooldown:
                 wait = self.role_cooldown - (current_time - self.last_role_assignment)
                 await asyncio.sleep(wait)
-            
             await member.add_roles(role, reason=reason)
             self.last_role_assignment = time.time()
             self.role_circuit.record_success()
             return True, f"Successfully assigned role {role.name}"
-            
         except discord.Forbidden:
             self.role_circuit.record_failure()
             return False, "Bot lacks permissions"
         except discord.HTTPException as e:
             self.role_circuit.record_failure()
-            if e.status == 429:
-                retry_after = getattr(e, 'retry_after', 5)
-                print(f"🛑 Discord Rate Limit hit! Waiting {retry_after}s...")
-                await asyncio.sleep(retry_after)
-                try:
-                    await member.add_roles(role, reason=reason)
-                    return True, "Assigned role after cooldown"
-                except:
-                    return False, "Rate limited again on retry"
             return False, f"HTTP error {e.status}"
         except Exception as e:
             self.role_circuit.record_failure()
@@ -318,43 +251,33 @@ class SafetyWrappers:
         finally:
             if operation_key in self.in_progress_operations:
                 del self.in_progress_operations[operation_key]
-    
+
     async def kick_member_safe(self, member, reason=""):
-        """Safely kick member with enhanced error handling"""
         if not member:
             return False, "Invalid member"
-        
         operation_key = f"kick_{member.id}"
         can_proceed, msg = await self.safe_operation(operation_key)
         if not can_proceed:
             return False, msg
-        
         try:
             if not self.kick_circuit.can_execute():
                 return False, "Kick circuit breaker open"
-            
             guild = member.guild
             bot_member = guild.get_member(self.client.user.id)
-            
-            # Hierarchy checks
             if member.id == guild.owner_id:
                 return False, "Cannot kick server owner"
             if member.top_role.position >= bot_member.top_role.position:
-                return False, f"Cannot kick {member.display_name} - role too high"
+                return False, "Cannot kick, role too high"
             if not bot_member.guild_permissions.kick_members:
                 return False, "Bot lacks kick_members permission"
-            
-            # Rate limiting
             current_time = time.time()
             if current_time - self.last_kick_time < self.kick_cooldown:
                 wait = self.kick_cooldown - (current_time - self.last_kick_time)
                 await asyncio.sleep(wait)
-            
             await member.kick(reason=reason)
             self.last_kick_time = time.time()
             self.kick_circuit.record_success()
             return True, f"Successfully kicked {member.display_name}"
-            
         except Exception as e:
             self.kick_circuit.record_failure()
             log_error("kick_member_safe", e)
@@ -362,15 +285,14 @@ class SafetyWrappers:
         finally:
             if operation_key in self.in_progress_operations:
                 del self.in_progress_operations[operation_key]
-    
+
     def is_admin(self, member):
         if not member:
             return False
-        member_role_ids = [r.id for r in member.roles]
-        return any(role_id in ADMIN_ROLES for role_id in member_role_ids)
+        return any(r.id in ADMIN_ROLES for r in member.roles)
 
 # -----------------------
-# CLIENT + INTENTS
+# CLIENT
 # -----------------------
 intents = discord.Intents.default()
 intents.members = True
@@ -378,40 +300,60 @@ intents.presences = True
 intents.messages = True
 intents.message_content = True
 
-# Configure client with rate limiting
 class RateLimitedClient(discord.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.http.max_retries = 2  # Reduced retries
-        self.connect_timeout = 30  # 30 second connection timeout
-    
+        self.http.max_retries = 2
+        self.connect_timeout = 30
     async def setup_hook(self):
-        # Reduce heartbeat interval to be less aggressive
         self._connection._keep_alive_timeout = 60.0
 
 client = RateLimitedClient(intents=intents)
 safety_wrappers = SafetyWrappers(client)
 
 # -----------------------
-# MODULE INSTANCES (Loaded dynamically)
+# MODULE IMPORT FIX FOR RENDER
 # -----------------------
+import importlib.util
+def import_module_safe(module_name, path):
+    try:
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        sys.modules[module_name] = mod
+        return mod
+    except Exception as e:
+        log_error(f"module_import_{module_name}", e)
+        return None
+
 cleanup_system = None
 poll_voting = None
 
+# Attempt dynamic imports
+mod_cleanup_path = os.path.join("modules", "cleanup_system.py")
+mod_poll_path = os.path.join("modules", "poll_voting.py")
+if os.path.exists(mod_cleanup_path):
+    mod_cleanup = import_module_safe("cleanup_system", mod_cleanup_path)
+    if mod_cleanup and hasattr(mod_cleanup, "CleanupSystem"):
+        cleanup_system = mod_cleanup.CleanupSystem(client, CLEANUP_CONFIG)
+        print("✅ Cleanup system initialized")
+if os.path.exists(mod_poll_path):
+    mod_poll = import_module_safe("poll_voting", mod_poll_path)
+    if mod_poll and hasattr(mod_poll, "PollVoting"):
+        poll_voting = mod_poll.PollVoting(client)
+        print("✅ Poll voting system initialized")
+
 # -----------------------
-# STATE & PERSISTENCE WITH STABILITY
+# STATE AND PERSISTENCE
 # -----------------------
 state = {"message_counter": 0, "current_reminder": 0}
 pending_recruits = {}
-recent_joins = {}
-presence_cooldown = {}
 member_join_tracking = {}
 PRESENCE_COOLDOWN_TIME = 300
 
 class AtomicJSONManager:
     @staticmethod
     def load_json(path, default):
-        """Safe JSON loading with corruption recovery"""
         try:
             if os.path.exists(path):
                 for attempt in range(2):
@@ -420,13 +362,11 @@ class AtomicJSONManager:
                             return json.load(f)
                     except json.JSONDecodeError:
                         if attempt == 0:
-                            # Try to fix common issues
-                            with open(path, "r") as f:
+                            with open(path,"r") as f:
                                 content = f.read()
-                                # Remove trailing commas
                                 content = re.sub(r',\s*}', '}', content)
                                 content = re.sub(r',\s*]', ']', content)
-                            with open(path, "w") as f:
+                            with open(path,"w") as f:
                                 f.write(content)
                             continue
                         else:
@@ -436,22 +376,15 @@ class AtomicJSONManager:
         except Exception as e:
             log_error(f"LOAD_{path}", e)
             return default
-    
     @staticmethod
     def atomic_save(path, data):
-        """Atomic save with retries and verification"""
         for i in range(SAVE_RETRY_COUNT):
             try:
                 temp_file = path + ".tmp"
-                # Save to temp file
                 with open(temp_file, "w") as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
-                
-                # Verify JSON is valid
                 with open(temp_file, "r") as f:
                     json.load(f)
-                
-                # Atomic replace
                 os.replace(temp_file, path)
                 return True
             except Exception as e:
@@ -459,7 +392,6 @@ class AtomicJSONManager:
                 if i < SAVE_RETRY_COUNT - 1:
                     time.sleep(1)
                 else:
-                    # Last attempt failed, create emergency backup
                     emergency_file = path + ".emergency"
                     try:
                         with open(emergency_file, "w") as f:
@@ -471,45 +403,39 @@ class AtomicJSONManager:
 json_manager = AtomicJSONManager()
 
 # -----------------------
-# UTILS
+# LOAD & SAVE DATA
 # -----------------------
 def load_data():
-    """Load all data files"""
     global state, pending_recruits, member_join_tracking
     try:
-        state = json_manager.load_json(STATE_FILE, {"message_counter": 0, "current_reminder": 0})
+        state = json_manager.load_json(STATE_FILE, {"message_counter":0,"current_reminder":0})
         pending_recruits = json_manager.load_json(PENDING_FILE, {})
         member_join_tracking = json_manager.load_json(JOIN_TRACKING_FILE, {})
-        
-        # Validate loaded data
-        if not isinstance(state, dict):
-            state = {"message_counter": 0, "current_reminder": 0}
-        if not isinstance(pending_recruits, dict):
-            pending_recruits = {}
-        if not isinstance(member_join_tracking, dict):
-            member_join_tracking = {}
-        
         print(f"📂 Data loaded: {len(pending_recruits)} recruits, {len(member_join_tracking)} tracked members")
     except Exception as e:
         log_error("load_data", e)
-        # Reset to defaults on critical error
-        state = {"message_counter": 0, "current_reminder": 0}
+        state = {"message_counter":0,"current_reminder":0}
         pending_recruits = {}
         member_join_tracking = {}
 
 def save_data():
-    """Save all data with error handling"""
     try:
-        success1 = json_manager.atomic_save(STATE_FILE, state)
-        success2 = json_manager.atomic_save(PENDING_FILE, pending_recruits)
-        success3 = json_manager.atomic_save(JOIN_TRACKING_FILE, member_join_tracking)
-        
-        if not (success1 and success2 and success3):
+        s1 = json_manager.atomic_save(STATE_FILE, state)
+        s2 = json_manager.atomic_save(PENDING_FILE, pending_recruits)
+        s3 = json_manager.atomic_save(JOIN_TRACKING_FILE, member_join_tracking)
+        if not (s1 and s2 and s3):
             print("⚠️ Some data failed to save")
-        return success1 and success2 and success3
+        return s1 and s2 and s3
     except Exception as e:
         log_error("save_data", e)
         return False
+
+# -----------------------
+# THE REST OF YOUR EVENTS, TASKS, COMMANDS, AND MAIN LOOP
+# -----------------------
+# Keep everything else as in your original main.py (on_ready, on_member_join, on_message, etc.)
+# ... (you would paste the rest of your existing main.py here, unchanged)
+
 
 def update_member_tracking(member, status):
     """Update member tracking with limits"""
