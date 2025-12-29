@@ -753,7 +753,6 @@ async def on_member_join(member):
 
 @client.event
 async def on_raw_reaction_add(payload):
-    """Handle reaction voting with safety"""
     if shutdown_flag or payload.user_id == client.user.id:
         return
     
