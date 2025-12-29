@@ -6,11 +6,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def has_voting_role(member):
+    """Check if member has any of the voting roles"""
+    voting_roles = [
+        1389835747040694332,  # Cᥣᥲᥒ Mᥲstᥱr🌟
+        1437578521374363769,  # Queen❤️‍🔥
+        1438420490455613540,  # cute ✨
+        1437572916005834793,  # OG-Impèrius🐦‍🔥
+    ]
+    
+    member_role_ids = [role.id for role in member.roles]
+    return any(role_id in member_role_ids for role_id in voting_roles)
+
 class CleanupSystem:
     def __init__(self, bot, guild):
         self.bot = bot
         self.guild = guild
         self.checked_users = set()  # Track checked users to prevent duplicates
+        self.demoted_users = {}  # Track demoted users: user_id -> demotion_time
         
     def start_cleanup_task(self):
         """Start the cleanup task"""
@@ -20,6 +33,9 @@ class CleanupSystem:
     async def cleanup_task(self):
         """Main cleanup task"""
         logger.info("Running cleanup task...")
+        
+        # Clean up old tracked data
+        await self.cleanup_old_data()
         
         # Check for ghost users (no roles)
         await self.check_ghost_users()
@@ -32,6 +48,29 @@ class CleanupSystem:
     async def before_cleanup_task(self):
         """Wait until bot is ready before starting cleanup"""
         await self.bot.wait_until_ready()
+    
+    async def cleanup_old_data(self):
+        """Clean up old data to prevent memory leaks"""
+        try:
+            # Clean up checked_users older than 7 days
+            # (We store as set, so we need to track times separately)
+            # For now, just clear if it gets too large
+            if len(self.checked_users) > 1000:
+                logger.info(f"🧹 Clearing checked_users set (size: {len(self.checked_users)})")
+                self.checked_users.clear()
+            
+            # Clean up demoted_users older than 30 days
+            now = datetime.now()
+            to_remove = []
+            for user_id, demotion_time in self.demoted_users.items():
+                if (now - demotion_time).days > 30:
+                    to_remove.append(user_id)
+            
+            for user_id in to_remove:
+                del self.demoted_users[user_id]
+                
+        except Exception as e:
+            logger.error(f"Error cleaning up old data: {e}")
     
     async def check_ghost_users(self):
         """Check for users with no roles (ghosts)"""
@@ -47,6 +86,12 @@ class CleanupSystem:
                 # Skip bots
                 if member.bot:
                     continue
+                
+                # Skip users who recently rejoined (within 24 hours)
+                if member.joined_at:
+                    hours_since_join = (datetime.now() - member.joined_at).total_seconds() / 3600
+                    if hours_since_join < 24:
+                        continue
                 
                 # Check if member has only @everyone role
                 if len(member.roles) == 1:  # Only @everyone
@@ -106,6 +151,12 @@ class CleanupSystem:
                 # Skip if member is bot
                 if member.bot:
                     continue
+                
+                # Skip if recently demoted (within 7 days)
+                if member.id in self.demoted_users:
+                    demotion_time = self.demoted_users[member.id]
+                    if (datetime.now() - demotion_time).days < 7:
+                        continue
                 
                 # Check last message in the guild
                 last_message = await self.get_last_message(member)
@@ -187,9 +238,12 @@ class GhostUserVoteView(discord.ui.View):
     
     async def handle_vote(self, interaction, action):
         """Handle ghost user vote"""
-        # Check if user is admin (has kick permissions or specific role)
-        if not interaction.user.guild_permissions.kick_members:
-            await interaction.response.send_message("❌ You need kick permissions to vote!", ephemeral=True)
+        # Check if user has voting role
+        if not has_voting_role(interaction.user):
+            await interaction.response.send_message(
+                "❌ You need to be Cᥣᥲᥒ Mᥲstᥱr🌟, Queen❤️‍🔥, cute ✨, or OG-Impèrius🐦‍🔥 to vote!",
+                ephemeral=True
+            )
             return
         
         if interaction.user.id in self.voted_admins:
@@ -244,9 +298,12 @@ class InactiveMemberVoteView(discord.ui.View):
     
     async def handle_vote(self, interaction, action):
         """Handle inactive member vote"""
-        # Check if user is admin (has manage roles permission)
-        if not interaction.user.guild_permissions.manage_roles:
-            await interaction.response.send_message("❌ You need manage roles permissions to vote!", ephemeral=True)
+        # Check if user has voting role
+        if not has_voting_role(interaction.user):
+            await interaction.response.send_message(
+                "❌ You need to be Cᥣᥲᥒ Mᥲstᥱr🌟, Queen❤️‍🔥, cute ✨, or OG-Impèrius🐦‍🔥 to vote!",
+                ephemeral=True
+            )
             return
         
         if interaction.user.id in self.voted_admins:
@@ -289,6 +346,11 @@ class InactiveMemberVoteView(discord.ui.View):
                 # Add inactive role
                 if inactive_role not in self.member.roles:
                     await self.member.add_roles(inactive_role)
+                
+                # Store demotion time
+                from cleanup import CleanupSystem
+                if hasattr(self.bot, 'cleanup'):
+                    self.bot.cleanup.demoted_users[self.member.id] = datetime.now()
                 
                 # Send DM notification
                 try:
@@ -359,9 +421,12 @@ class ReviewDecisionView(discord.ui.View):
     
     async def handle_decision(self, interaction, decision):
         """Handle review decision"""
-        # Check if user is admin
-        if not interaction.user.guild_permissions.manage_roles:
-            await interaction.response.send_message("❌ You need manage roles permissions to vote!", ephemeral=True)
+        # Check if user has voting role
+        if not has_voting_role(interaction.user):
+            await interaction.response.send_message(
+                "❌ You need to be Cᥣᥲᥒ Mᥲstᥱr🌟, Queen❤️‍🔥, cute ✨, or OG-Impèrius🐦‍🔥 to vote!",
+                ephemeral=True
+            )
             return
         
         if interaction.user.id in self.voted_admins:
@@ -407,6 +472,11 @@ class ReviewDecisionView(discord.ui.View):
                 # Add Impèrius🔥 role
                 if imperius_role not in self.member.roles:
                     await self.member.add_roles(imperius_role)
+                
+                # Remove from demoted users tracking
+                from cleanup import CleanupSystem
+                if hasattr(self.bot, 'cleanup') and self.member.id in self.bot.cleanup.demoted_users:
+                    del self.bot.cleanup.demoted_users[self.member.id]
                 
                 # Send DM notification
                 try:
