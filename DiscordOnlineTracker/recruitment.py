@@ -3,7 +3,46 @@ from discord.ext import commands, tasks
 import asyncio
 from datetime import datetime, timedelta
 import logging
+# Add these imports at the top
+from discord import ui
+import discord
 
+# Then add these view classes with custom_id for persistence
+class TryoutVoteView(discord.ui.View):
+    def __init__(self, bot, member=None, answers=None):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.member = member
+        self.answers = answers
+        self.voted_admins = set()
+    
+    @discord.ui.button(label="✅ Tryout", style=discord.ButtonStyle.green, custom_id="persistent:tryout_yes")
+    async def tryout_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_vote(interaction, "tryout")
+    
+    @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.red, custom_id="persistent:tryout_no")
+    async def tryout_no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_vote(interaction, "reject")
+    
+    # ... rest of the class ...
+
+class TryoutDecisionView(discord.ui.View):
+    def __init__(self, bot, member=None, answers=None):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.member = member
+        self.answers = answers
+        self.voted_admins = set()
+    
+    @discord.ui.button(label="✅ Pass", style=discord.ButtonStyle.green, custom_id="persistent:tryout_pass")
+    async def tryout_pass(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_decision(interaction, "passed")
+    
+    @discord.ui.button(label="❌ Fail", style=discord.ButtonStyle.red, custom_id="persistent:tryout_fail")
+    async def tryout_fail(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_decision(interaction, "failed")
+    
+    # ... rest of the class ...
 logger = logging.getLogger(__name__)
 
 class RecruitmentSystem:
