@@ -70,7 +70,7 @@ class OnlineAnnounceSystem:
             # Get attendance channel
             channel = self.bot.get_channel(1437768842871832597)  # ATTENDANCE_CHANNEL
             if not channel:
-                logger.error(f"Attendance channel not found!")
+                logger.error("Attendance channel not found!")
                 return
             
             # Get member's highest role for announcement
@@ -91,7 +91,7 @@ class OnlineAnnounceSystem:
                 embed.set_footer(text="Online Status")
                 
                 await channel.send(embed=embed)
-                logger.info(f"Announced {member.name} as online")
+                logger.info(f"📢 Announced {member.name} as online")
                 
         except Exception as e:
             logger.error(f"Error announcing online status: {e}")
