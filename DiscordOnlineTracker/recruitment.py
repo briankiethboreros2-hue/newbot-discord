@@ -13,12 +13,13 @@ def has_voting_role(member):
     return any(role_id in member_role_ids for role_id in VOTING_ROLES)
 
 class RecruitmentSystem:
-    def __init__(self, bot, guild, state_manager):
+    def __init__(self, bot, guild):  # REMOVE state parameter
         self.bot = bot
         self.guild = guild
-        self.state = state_manager
         
-        # Store admin review messages: user_id -> message_id
+        # Store locally instead of using state manager
+        self.active_interviews = {}
+        self.interview_timeouts = {}
         self.admin_review_messages = {}
         self.tryout_vote_messages = {}
         
