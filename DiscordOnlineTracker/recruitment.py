@@ -401,7 +401,7 @@ class RecruitmentSystem:
             logger.error(f"Error cleaning up messages: {e}")
 
 class TryoutVoteView(discord.ui.View):
-    """View for admin tryout voting"""
+    """View for admin tryout voting - WITH DELETE FEATURE"""
     def __init__(self, bot, member=None, answers=None, is_returnee=False):
         super().__init__(timeout=None)
         self.bot = bot
@@ -409,6 +409,7 @@ class TryoutVoteView(discord.ui.View):
         self.answers = answers
         self.is_returnee = is_returnee
         self.voted_admins = set()
+        self.vote_made = False  # Track if a vote has been made
     
     @discord.ui.button(label="✅ Tryout", style=discord.ButtonStyle.green, custom_id="persistent:tryout_yes")
     async def tryout_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -419,7 +420,7 @@ class TryoutVoteView(discord.ui.View):
         await self.handle_vote(interaction, "reject")
     
     async def handle_vote(self, interaction, vote_type):
-        """Handle admin vote"""
+        """Handle admin vote - DELETE ORIGINAL POST AFTER VOTE"""
         # Check if user has voting role
         if not has_voting_role(interaction.user):
             await interaction.response.send_message(
@@ -428,12 +429,18 @@ class TryoutVoteView(discord.ui.View):
             )
             return
         
+        # Check if a vote has already been made
+        if self.vote_made:
+            await interaction.response.send_message("⚠️ A decision has already been made for this recruit!", ephemeral=True)
+            return
+        
         # Check if admin has already voted
         if interaction.user.id in self.voted_admins:
             await interaction.response.send_message("⚠️ You've already voted!", ephemeral=True)
             return
         
         self.voted_admins.add(interaction.user.id)
+        self.vote_made = True  # Mark that a vote has been made
         
         # Get admin's display name
         admin_name = interaction.user.display_name
@@ -455,7 +462,18 @@ class TryoutVoteView(discord.ui.View):
             
             await channel.send(message)
         
-        await interaction.response.send_message(f"✅ Vote recorded: {vote_type}", ephemeral=True)
+        # DELETE THE ORIGINAL VOTE MESSAGE
+        try:
+            await interaction.message.delete()
+            logger.info(f"🗑️ Deleted original vote message for {self.member.name} after {admin_name} voted {vote_type}")
+        except discord.NotFound:
+            logger.warning(f"Original vote message not found for {self.member.name}")
+        except discord.Forbidden:
+            logger.error(f"No permission to delete message for {self.member.name}")
+        except Exception as e:
+            logger.error(f"Error deleting original vote message: {e}")
+        
+        await interaction.response.send_message(f"✅ Vote recorded: {vote_type}\n🗑️ Original post deleted.", ephemeral=True)
     
     async def send_to_review_channel(self):
         """Send to review channel for tryout decision"""
@@ -484,7 +502,7 @@ class TryoutVoteView(discord.ui.View):
             logger.error(f"Error sending to review channel: {e}")
 
 class TryoutDecisionView(discord.ui.View):
-    """View for tryout pass/fail decision"""
+    """View for tryout pass/fail decision - WITH DELETE FEATURE"""
     def __init__(self, bot, member=None, answers=None, is_returnee=False):
         super().__init__(timeout=None)
         self.bot = bot
@@ -492,6 +510,7 @@ class TryoutDecisionView(discord.ui.View):
         self.answers = answers
         self.is_returnee = is_returnee
         self.voted_admins = set()
+        self.vote_made = False  # Track if a vote has been made
     
     @discord.ui.button(label="✅ Pass", style=discord.ButtonStyle.green, custom_id="persistent:tryout_pass")
     async def tryout_pass(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -502,7 +521,7 @@ class TryoutDecisionView(discord.ui.View):
         await self.handle_decision(interaction, "failed")
     
     async def handle_decision(self, interaction, decision):
-        """Handle tryout decision"""
+        """Handle tryout decision - DELETE ORIGINAL POST AFTER VOTE"""
         # Check if user has voting role
         if not has_voting_role(interaction.user):
             await interaction.response.send_message(
@@ -511,11 +530,17 @@ class TryoutDecisionView(discord.ui.View):
             )
             return
         
+        # Check if a vote has already been made
+        if self.vote_made:
+            await interaction.response.send_message("⚠️ A decision has already been made for this recruit!", ephemeral=True)
+            return
+        
         if interaction.user.id in self.voted_admins:
             await interaction.response.send_message("⚠️ You've already voted!", ephemeral=True)
             return
         
         self.voted_admins.add(interaction.user.id)
+        self.vote_made = True  # Mark that a vote has been made
         
         admin_name = interaction.user.display_name
         
@@ -531,7 +556,18 @@ class TryoutDecisionView(discord.ui.View):
             # Give role and announce in tryout result channel
             await self.handle_passed_recruit(admin_name)
         
-        await interaction.response.send_message(f"✅ Vote recorded: {decision}", ephemeral=True)
+        # DELETE THE ORIGINAL DECISION MESSAGE
+        try:
+            await interaction.message.delete()
+            logger.info(f"🗑️ Deleted original decision message for {self.member.name} after {admin_name} voted {decision}")
+        except discord.NotFound:
+            logger.warning(f"Original decision message not found for {self.member.name}")
+        except discord.Forbidden:
+            logger.error(f"No permission to delete message for {self.member.name}")
+        except Exception as e:
+            logger.error(f"Error deleting original decision message: {e}")
+        
+        await interaction.response.send_message(f"✅ Vote recorded: {decision}\n🗑️ Original post deleted.", ephemeral=True)
     
     async def handle_passed_recruit(self, admin_name):
         """Handle passed recruit"""
