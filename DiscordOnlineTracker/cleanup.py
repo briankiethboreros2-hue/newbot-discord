@@ -3,10 +3,6 @@ from discord.ext import commands, tasks
 import asyncio
 from datetime import datetime, timedelta
 import logging
-# cleanup.py
-import discord
-import asyncio
-# ... your other imports ...
 
 # ======== ADD THIS CLASS DEFINITION ========
 class InactiveMemberVoteView(discord.ui.View):
@@ -39,8 +35,11 @@ class InactiveMemberVoteView(discord.ui.View):
 # Your existing functions continue below...
 async def check_inactive_members():
     # ... your existing code that uses InactiveMemberVoteView ...
+    # MOVE THE LOGGER LINE INSIDE THIS FUNCTION
+    logger = logging.getLogger(__name__)
+    # Add the rest of your function code here...
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # This is at module level - KEEP THIS ONE
 
 def has_voting_role(member):
     """Check if member has any of the voting roles"""
@@ -203,7 +202,7 @@ class CleanupSystem:
                         timestamp=datetime.now()
                     )
                     
-                    view = InactiveMemberVoteView(self.bot, member)
+                    view = InactiveMemberVoteView(member.id, "Impèrius🔥")  # Fixed this line
                     await channel.send(embed=embed, view=view)
                     
                     await asyncio.sleep(2)
