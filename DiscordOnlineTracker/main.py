@@ -11,7 +11,7 @@ import time
 # Import our modules
 from recruitment import RecruitmentSystem
 from online_announce import OnlineAnnounce
-from cleanup import CleanupSystem, InactiveMemberVoteView  # Added import
+from cleanup import CleanupSystem, InactiveMemberVoteView
 from state_manager import StateManager
 
 # Import your existing keep_alive
@@ -32,11 +32,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Bot intents - ENABLE THESE IN DISCORD DEVELOPER PORTAL!
+# Bot intents
 intents = discord.Intents.default()
-intents.members = True  # Requires "Server Members Intent"
+intents.members = True
 intents.message_content = True
-intents.presences = True  # REQUIRES "Presence Intent" - CRITICAL!
+intents.presences = True
 intents.guilds = True
 
 class ImperialBot(commands.Bot):
@@ -47,15 +47,10 @@ class ImperialBot(commands.Bot):
             help_command=None
         )
         
-        # Initialize state manager
         self.state = StateManager()
-        
-        # Initialize systems
         self.recruitment = None
         self.online_announce = None
-        self.cleanup_system = None  # Renamed to cleanup_system for clarity
-        
-        # Store guild for quick access
+        self.cleanup_system = None
         self.main_guild = None
         self.bot_start_time = datetime.now()
 
@@ -63,56 +58,54 @@ class ImperialBot(commands.Bot):
         """Setup hook - runs before on_ready"""
         logger.info("🔧 Running setup_hook...")
         
-        # Start state auto-save
         if hasattr(self.state, 'start_auto_save'):
             self.state.start_auto_save()
         
-        # Start state cleanup task
         if hasattr(self, 'cleanup_state_task'):
             self.cleanup_state_task.start()
 
     async def on_ready(self):
         """Bot is ready - set up systems"""
-        self.start_time = datetime.now()
-        self.bot_start_time = datetime.now()
-        
         logger.info(f'✅ Bot is online as {self.user} (ID: {self.user.id})')
         logger.info(f'📊 Connected to {len(self.guilds)} guild(s)')
-        logger.info(f'🔧 Intents enabled: members={intents.members}, presences={intents.presences}')
         
         # Log all guilds
         for guild in self.guilds:
             logger.info(f'🏰 Guild: {guild.name} (ID: {guild.id}) - Members: {guild.member_count}')
-            
-        # Get the main guild (assuming bot is in one guild)
+        
+        # Get the main guild
         if self.guilds:
             self.main_guild = self.guilds[0]
             logger.info(f'🏰 Main guild: {self.main_guild.name} (ID: {self.main_guild.id})')
             
-            # Initialize systems with the guild
-            self.recruitment = RecruitmentSystem(self, self.main_guild, self.state)
-            self.online_announce = OnlineAnnounce(self, self.main_guild, self.state)
-            
-            # Initialize cleanup system
-            self.cleanup_system = CleanupSystem(self, self.main_guild, self.state)
-            
-            # Make cleanup system accessible to views
-            InactiveMemberVoteView.cleanup_system = self.cleanup_system
-            
-            # Start cleanup task
-            if hasattr(self.cleanup_system, 'start_cleanup_task'):
-                self.cleanup_system.start_cleanup_task()
-                logger.info("✅ Cleanup task started")
-            
-            # Start online announcement tracking
-            if hasattr(self.online_announce, 'start_tracking'):
-                self.online_announce.start_tracking()
-                logger.info("✅ Online announcement tracking started")
-            
-            # Verify channels and roles exist
-            await self.verify_resources()
-            
-            logger.info("✅ All systems initialized")
+            try:
+                # Initialize systems
+                self.recruitment = RecruitmentSystem(self, self.main_guild, self.state)
+                self.online_announce = OnlineAnnounce(self, self.main_guild, self.state)
+                self.cleanup_system = CleanupSystem(self, self.main_guild, self.state)
+                
+                # Initialize check dates to prevent immediate flagging
+                if hasattr(self.cleanup_system, 'initialize_check_dates'):
+                    await self.cleanup_system.initialize_check_dates()
+                
+                # Make cleanup system accessible to views
+                InactiveMemberVoteView.cleanup_system = self.cleanup_system
+                
+                # Start tasks
+                if hasattr(self.cleanup_system, 'start_cleanup_task'):
+                    self.cleanup_system.start_cleanup_task()
+                    logger.info("✅ Cleanup task started")
+                
+                if hasattr(self.online_announce, 'start_tracking'):
+                    self.online_announce.start_tracking()
+                    logger.info("✅ Online announcement tracking started")
+                
+                await self.verify_resources()
+                logger.info("✅ All systems initialized")
+                
+            except Exception as e:
+                logger.error(f"❌ Error initializing systems: {e}")
+                traceback.print_exc()
         
         # Set bot status
         await self.change_presence(
@@ -137,9 +130,11 @@ class ImperialBot(commands.Bot):
 
     async def verify_resources(self):
         """Verify that all channels and roles exist"""
+        if not self.main_guild:
+            return
+            
         logger.info("🔍 Verifying channels and roles...")
         
-        # Channel IDs from your requirements
         channels_to_check = [
             ("RECRUIT_CONFIRM_CHANNEL", 1437568595977834590),
             ("ADMIN_CHANNEL", 1455138098437689387),
@@ -150,13 +145,12 @@ class ImperialBot(commands.Bot):
         ]
         
         for name, channel_id in channels_to_check:
-            channel = self.get_channel(channel_id)
+            channel = self.main_guild.get_channel(channel_id)
             if channel:
                 logger.info(f"✅ Found {name}: {channel.name}")
             else:
                 logger.warning(f"⚠️ Channel not found: {name} (ID: {channel_id})")
         
-        # Role IDs from your requirements
         roles_to_check = [
             ("IMPERIUS_ROLE", 1437570031822176408),
             ("OG_ROLE", 1437572916005834793),
@@ -172,9 +166,12 @@ class ImperialBot(commands.Bot):
                 logger.info(f"✅ Found {name}: {role.name} (Members: {len(role.members)})")
             else:
                 logger.warning(f"⚠️ Role not found: {name} (ID: {role_id})")
-    
+
     async def on_member_join(self, member):
         """Handle new member joining"""
+        if not self.main_guild or member.guild.id != self.main_guild.id:
+            return
+            
         try:
             logger.info(f"👤 New member joined: {member.name} (ID: {member.id})")
             
@@ -236,7 +233,6 @@ class ImperialBot(commands.Bot):
             
             # Pass to online announcement system if it exists
             if self.online_announce:
-                # Check if it has the on_presence_update method
                 if hasattr(self.online_announce, 'on_presence_update'):
                     await self.online_announce.on_presence_update(before, after)
                     
@@ -246,11 +242,9 @@ class ImperialBot(commands.Bot):
     
     async def on_message(self, message):
         """Handle all messages (for DMs and interviews)"""
-        # Don't respond to ourselves
         if message.author == self.user:
             return
             
-        # Handle DM messages for interviews
         if isinstance(message.channel, discord.DMChannel):
             try:
                 logger.info(f"💬 DM from {message.author.name}: {message.content[:50]}...")
@@ -260,7 +254,6 @@ class ImperialBot(commands.Bot):
                 logger.error(f"❌ Error handling DM: {e}")
                 traceback.print_exc()
         
-        # Let commands process
         await self.process_commands(message)
 
     async def on_error(self, event, *args, **kwargs):
@@ -271,9 +264,7 @@ class ImperialBot(commands.Bot):
 def main():
     """Main function to run the bot"""
     logger.info("🚀 Starting Imperial Bot...")
-    logger.info("⚠️ IMPORTANT: Make sure 'Presence Intent' and 'Server Members Intent' are enabled in Discord Developer Portal!")
     
-    # Start keep_alive if available
     if keep_alive_available:
         logger.info("🌐 Starting keep_alive server...")
         import threading
@@ -281,16 +272,11 @@ def main():
         keep_alive_thread.start()
         logger.info("✅ keep_alive server started in background")
     
-    # Create bot instance
     bot = ImperialBot()
-    
-    # Get token from environment (Render sets this)
     token = os.environ.get('DISCORD_TOKEN')
     
     if not token:
-        logger.error("❌ DISCORD_TOKEN not found in environment variables!")
-        logger.error("Please set DISCORD_TOKEN in Render environment variables")
-        # Try to get from file as fallback (for local testing)
+        logger.error("❌ DISCORD_TOKEN not found!")
         try:
             with open('token.txt', 'r') as f:
                 token = f.read().strip()
@@ -299,7 +285,6 @@ def main():
             logger.error("❌ Also no token.txt file found")
             return
     
-    # Run the bot with error handling
     max_retries = 5
     retry_count = 0
     
@@ -308,7 +293,7 @@ def main():
             logger.info(f"🔗 Connecting to Discord... (Attempt {retry_count + 1}/{max_retries})")
             bot.run(token, reconnect=True)
         except discord.LoginFailure:
-            logger.error("❌ Invalid token. Please check your DISCORD_TOKEN.")
+            logger.error("❌ Invalid token.")
             break
         except KeyboardInterrupt:
             logger.info("🛑 Bot stopped by user")
@@ -321,7 +306,7 @@ def main():
                 logger.info(f"🔄 Restarting in 10 seconds...")
                 time.sleep(10)
             else:
-                logger.error(f"❌ Max retries ({max_retries}) reached. Giving up.")
+                logger.error(f"❌ Max retries ({max_retries}) reached.")
                 break
 
 if __name__ == "__main__":
