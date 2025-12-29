@@ -10,9 +10,9 @@ import time
 
 # Import our modules
 from recruitment import RecruitmentSystem
-from online_announce import OnlineAnnounce  # CHANGED: Import OnlineAnnounce instead of OnlineAnnounceSystem
+from online_announce import OnlineAnnounce
 from cleanup import CleanupSystem
-from state_manager import StateManager  # Make sure this file exists
+from state_manager import StateManager
 
 # Import your existing keep_alive
 try:
@@ -32,11 +32,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Bot intents
+# Bot intents - MAKE SURE THESE ARE ENABLED IN DISCORD DEVELOPER PORTAL
 intents = discord.Intents.default()
-intents.members = True
+intents.members = True  # Requires "Server Members Intent" in Dev Portal
 intents.message_content = True
-intents.presences = True
+intents.presences = True  # REQUIRES "Presence Intent" in Dev Portal - CRITICAL!
 intents.guilds = True
 
 class ImperialBot(commands.Bot):
@@ -57,6 +57,7 @@ class ImperialBot(commands.Bot):
         
         # Store guild for quick access
         self.main_guild = None
+        self.bot_start_time = datetime.now()
 
     async def setup_hook(self):
         """Setup hook - runs before on_ready"""
@@ -71,13 +72,15 @@ class ImperialBot(commands.Bot):
     async def on_ready(self):
         """Bot is ready - set up systems"""
         self.start_time = datetime.now()
+        self.bot_start_time = datetime.now()
         
         logger.info(f'✅ Bot is online as {self.user} (ID: {self.user.id})')
         logger.info(f'📊 Connected to {len(self.guilds)} guild(s)')
+        logger.info(f'🔧 Intents enabled: members={intents.members}, presences={intents.presences}')
         
         # Log all guilds
         for guild in self.guilds:
-            logger.info(f'🏰 Guild: {guild.name} (ID: {guild.id})')
+            logger.info(f'🏰 Guild: {guild.name} (ID: {guild.id}) - Members: {guild.member_count}')
             
         # Get the main guild (assuming bot is in one guild)
         if self.guilds:
@@ -86,13 +89,18 @@ class ImperialBot(commands.Bot):
             
             # Initialize systems with the guild
             self.recruitment = RecruitmentSystem(self, self.main_guild, self.state)
-            self.online_announce = OnlineAnnounce(self, self.main_guild, self.state)  # CHANGED: OnlineAnnounce
+            self.online_announce = OnlineAnnounce(self, self.main_guild, self.state)
             self.cleanup = CleanupSystem(self, self.main_guild, self.state)
             
             # Start cleanup task
             if hasattr(self.cleanup, 'start_cleanup_task'):
                 self.cleanup.start_cleanup_task()
                 logger.info("✅ Cleanup task started")
+            
+            # Start online announcement tracking
+            if hasattr(self.online_announce, 'start_tracking'):
+                self.online_announce.start_tracking()
+                logger.info("✅ Online announcement tracking started")
             
             # Verify channels and roles exist
             await self.verify_resources()
@@ -104,7 +112,8 @@ class ImperialBot(commands.Bot):
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
                 name="Impèrius Recruits"
-            )
+            ),
+            status=discord.Status.online
         )
         
         logger.info("✅ Bot is fully operational!")
@@ -152,7 +161,7 @@ class ImperialBot(commands.Bot):
         for name, role_id in roles_to_check:
             role = self.main_guild.get_role(role_id)
             if role:
-                logger.info(f"✅ Found {name}: {role.name}")
+                logger.info(f"✅ Found {name}: {role.name} (Members: {len(role.members)})")
             else:
                 logger.warning(f"⚠️ Role not found: {name} (ID: {role_id})")
     
@@ -196,17 +205,40 @@ class ImperialBot(commands.Bot):
             logger.error(f"❌ Error in on_member_remove: {e}")
     
     async def on_member_update(self, before, after):
-        """Handle member status changes (online/offline)"""
+        """Handle member updates (roles, nickname)"""
         try:
-            if self.online_announce:
-                # Check if the OnlineAnnounce class has check_online_status method
-                if hasattr(self.online_announce, 'check_online_status'):
-                    await self.online_announce.check_online_status(before, after)
-                else:
-                    # If not, use the on_presence_update listener
-                    pass
+            # We'll handle presence updates in on_presence_update instead
+            pass
         except Exception as e:
             logger.error(f"❌ Error in on_member_update: {e}")
+            traceback.print_exc()
+    
+    async def on_presence_update(self, before, after):
+        """Handle presence status changes (online/offline/idle/dnd)"""
+        try:
+            # Skip if not in our main guild
+            if not after.guild or after.guild.id != self.main_guild.id:
+                return
+            
+            # Skip bots
+            if after.bot:
+                return
+            
+            # Log the presence change for debugging
+            if before.status != after.status:
+                logger.info(f"🔄 Presence update: {after.name} - {before.status} → {after.status}")
+            
+            # Pass to online announcement system if it exists
+            if self.online_announce:
+                # Check if it has the on_presence_update method
+                if hasattr(self.online_announce, 'on_presence_update'):
+                    await self.online_announce.on_presence_update(before, after)
+                # Or check for check_online_status method
+                elif hasattr(self.online_announce, 'check_online_status'):
+                    await self.online_announce.check_online_status(before, after)
+                    
+        except Exception as e:
+            logger.error(f"❌ Error in on_presence_update: {e}")
             traceback.print_exc()
     
     async def on_message(self, message):
@@ -236,6 +268,7 @@ class ImperialBot(commands.Bot):
 def main():
     """Main function to run the bot"""
     logger.info("🚀 Starting Imperial Bot...")
+    logger.info("⚠️ IMPORTANT: Make sure 'Presence Intent' and 'Server Members Intent' are enabled in Discord Developer Portal!")
     
     # Start keep_alive if available
     if keep_alive_available:
