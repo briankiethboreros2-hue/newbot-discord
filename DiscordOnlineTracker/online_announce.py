@@ -6,11 +6,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 class OnlineAnnounceSystem:
-    def __init__(self, bot, guild):
+    def __init__(self, bot, guild):  # REMOVE state parameter
         self.bot = bot
         self.guild = guild
-        self.last_online = {}  # Store last online announcements to prevent spam
-        self.tracked_members = set()  # Track members we've seen online
+        self.last_online = {}  # Store locally
     
     async def check_online_status(self, before, after):
         """Check if member came online"""
