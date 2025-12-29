@@ -19,11 +19,10 @@ def has_voting_role(member):
     return any(role_id in member_role_ids for role_id in voting_roles)
 
 class CleanupSystem:
-    def __init__(self, bot, guild):
+    def __init__(self, bot, guild):  # REMOVE state parameter
         self.bot = bot
         self.guild = guild
-        self.checked_users = set()  # Track checked users to prevent duplicates
-        self.demoted_users = {}  # Track demoted users: user_id -> demotion_time
+        self.checked_users = set()
         
     def start_cleanup_task(self):
         """Start the cleanup task"""
