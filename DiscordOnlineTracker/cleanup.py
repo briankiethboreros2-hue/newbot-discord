@@ -420,6 +420,30 @@ class CleanupSystem:
         """Start the cleanup task"""
         self.cleanup_task.start()
     
+    async def initialize_check_dates(self):
+        """Initialize check dates for all Impèrius members to prevent immediate flagging"""
+        try:
+            imperius_role = self.guild.get_role(1437570031822176408)
+            if not imperius_role:
+                return
+            
+            now = datetime.now()
+            initialized = 0
+            
+            for member in imperius_role.members:
+                if member.bot:
+                    continue
+                
+                # Only initialize if not already set
+                if member.id not in self.member_last_check:
+                    self.member_last_check[member.id] = now
+                    initialized += 1
+            
+            logger.info(f"✅ Initialized check dates for {initialized} Impèrius members")
+            
+        except Exception as e:
+            logger.error(f"❌ Error initializing check dates: {e}")
+    
     @tasks.loop(hours=24)  # Check every 24 hours
     async def cleanup_task(self):
         """Main cleanup task - runs daily"""
