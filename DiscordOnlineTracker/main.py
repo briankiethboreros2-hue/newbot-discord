@@ -32,11 +32,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Bot intents - MAKE SURE THESE ARE ENABLED IN DISCORD DEVELOPER PORTAL
+# Bot intents - ENABLE THESE IN DISCORD DEVELOPER PORTAL!
 intents = discord.Intents.default()
-intents.members = True  # Requires "Server Members Intent" in Dev Portal
+intents.members = True  # Requires "Server Members Intent"
 intents.message_content = True
-intents.presences = True  # REQUIRES "Presence Intent" in Dev Portal - CRITICAL!
+intents.presences = True  # REQUIRES "Presence Intent" - CRITICAL!
 intents.guilds = True
 
 class ImperialBot(commands.Bot):
@@ -64,10 +64,12 @@ class ImperialBot(commands.Bot):
         logger.info("🔧 Running setup_hook...")
         
         # Start state auto-save
-        self.state.start_auto_save()
+        if hasattr(self.state, 'start_auto_save'):
+            self.state.start_auto_save()
         
         # Start state cleanup task
-        self.cleanup_state_task.start()
+        if hasattr(self, 'cleanup_state_task'):
+            self.cleanup_state_task.start()
 
     async def on_ready(self):
         """Bot is ready - set up systems"""
@@ -121,7 +123,8 @@ class ImperialBot(commands.Bot):
     @tasks.loop(hours=1)
     async def cleanup_state_task(self):
         """Clean up stale state data hourly"""
-        self.state.cleanup_stale_data()
+        if hasattr(self.state, 'cleanup_stale_data'):
+            self.state.cleanup_stale_data()
     
     @cleanup_state_task.before_loop
     async def before_cleanup_state(self):
@@ -174,7 +177,7 @@ class ImperialBot(commands.Bot):
             user_id = member.id
             current_time = datetime.now()
             
-            recent_join = self.state.get_recent_join(user_id)
+            recent_join = self.state.get_recent_join(user_id) if hasattr(self.state, 'get_recent_join') else None
             if recent_join:
                 time_diff = (current_time - recent_join).total_seconds()
                 if time_diff < 60:  # 1 minute cooldown
@@ -182,10 +185,11 @@ class ImperialBot(commands.Bot):
                     return
             
             # Store join time
-            self.state.add_recent_join(user_id, current_time)
+            if hasattr(self.state, 'add_recent_join'):
+                self.state.add_recent_join(user_id, current_time)
             
             # Interview everyone including returnees
-            if self.recruitment:
+            if self.recruitment and hasattr(self.recruitment, 'handle_new_member'):
                 await self.recruitment.handle_new_member(member)
                 
         except Exception as e:
@@ -198,20 +202,11 @@ class ImperialBot(commands.Bot):
             logger.info(f"👋 Member left: {member.name} (ID: {member.id})")
             
             # Clean up any active interviews for this user
-            if self.recruitment:
+            if self.recruitment and hasattr(self.recruitment, 'cleanup_member_data'):
                 self.recruitment.cleanup_member_data(member.id)
                 
         except Exception as e:
             logger.error(f"❌ Error in on_member_remove: {e}")
-    
-    async def on_member_update(self, before, after):
-        """Handle member updates (roles, nickname)"""
-        try:
-            # We'll handle presence updates in on_presence_update instead
-            pass
-        except Exception as e:
-            logger.error(f"❌ Error in on_member_update: {e}")
-            traceback.print_exc()
     
     async def on_presence_update(self, before, after):
         """Handle presence status changes (online/offline/idle/dnd)"""
@@ -233,9 +228,6 @@ class ImperialBot(commands.Bot):
                 # Check if it has the on_presence_update method
                 if hasattr(self.online_announce, 'on_presence_update'):
                     await self.online_announce.on_presence_update(before, after)
-                # Or check for check_online_status method
-                elif hasattr(self.online_announce, 'check_online_status'):
-                    await self.online_announce.check_online_status(before, after)
                     
         except Exception as e:
             logger.error(f"❌ Error in on_presence_update: {e}")
@@ -251,7 +243,7 @@ class ImperialBot(commands.Bot):
         if isinstance(message.channel, discord.DMChannel):
             try:
                 logger.info(f"💬 DM from {message.author.name}: {message.content[:50]}...")
-                if self.recruitment:
+                if self.recruitment and hasattr(self.recruitment, 'handle_dm_response'):
                     await self.recruitment.handle_dm_response(message)
             except Exception as e:
                 logger.error(f"❌ Error handling DM: {e}")
