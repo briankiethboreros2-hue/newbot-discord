@@ -1,363 +1,342 @@
-"""
-Button Views for Discord Bot
-Handles all button interactions for the cleanup system
-WITH STABILITY FIXES
-"""
-
 import discord
-from discord.ui import View, Button
-import asyncio
-from datetime import datetime
+from discord.ui import Button, View
+from datetime import datetime, timedelta
+from typing import Optional
 
-class BaseAdminView(View):
-    """Base view for admin actions with rate limiting and stability"""
-    
-    def __init__(self, member: discord.Member, cleanup_system, timeout=86400):  # 24 hours
+class GhostUserVoteView(View):
+    def __init__(self, bot, user_id: int, vote_type: str, timeout: Optional[float] = None):
         super().__init__(timeout=timeout)
-        self.member = member
-        self.cleanup_system = cleanup_system
-        self.voted_admins = set()
-        self.vote_lock = asyncio.Lock()  # Prevent race conditions
+        self.bot = bot
+        self.user_id = user_id
+        self.vote_type = vote_type
+        self.voters = set()  # Track who has voted
+        self.vote_result = {"kick": 0, "grant": 0, "review": 0}
         
-        # Stability tracking
-        self.created_at = datetime.now()
-        self.interaction_count = 0
-        
+        # Create buttons
+        self.add_item(Button(style=discord.ButtonStyle.red, label="🚫 Kick", custom_id=f"ghost_kick_{user_id}"))
+        self.add_item(Button(style=discord.ButtonStyle.green, label="✨ Grant Role", custom_id=f"ghost_grant_{user_id}"))
+        self.add_item(Button(style=discord.ButtonStyle.grey, label="📝 Review", custom_id=f"ghost_review_{user_id}"))
+    
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Check if user can interact with stability checks"""
-        self.interaction_count += 1
-        
-        # Check if view is already expired
-        if self.is_finished():
-            await interaction.response.send_message(
-                "❌ This action has expired. Please run cleanup check again.",
-                ephemeral=True
-            )
-            return False
-        
-        # Rate limit: max 10 interactions per view
-        if self.interaction_count > 10:
-            await interaction.response.send_message(
-                "❌ Too many interactions on this view. Please use a new one.",
-                ephemeral=True
-            )
-            return False
-        
-        # Check admin permissions
-        if not self.cleanup_system.is_admin(interaction.user):
-            await interaction.response.send_message(
-                "❌ You don't have permission to vote on this action.",
-                ephemeral=True
-            )
-            return False
-        
-        return True
+        """Check if user has permission to vote"""
+        # Check admin roles
+        cleanup_cog = self.bot.get_cog("CleanupSystem")
+        if cleanup_cog:
+            return await cleanup_cog.check_admin_permission(interaction.user)
+        return False
     
     async def on_timeout(self):
-        """Handle view timeout gracefully"""
-        try:
-            # Disable all buttons on timeout
-            for child in self.children:
-                child.disabled = True
-            
-            # Try to update if we have a message reference
-            if hasattr(self, '_message'):
-                await self._message.edit(view=self)
-        except:
-            pass
-
-class GhostUserView(BaseAdminView):
-    """View for handling ghost users"""
-    
-    def __init__(self, member: discord.Member, cleanup_system):
-        super().__init__(member, cleanup_system, timeout=86400)
-        self.votes_needed = 1  # Only 1 admin needed for ghost users
-    
-    @discord.ui.button(label="Kick", style=discord.ButtonStyle.danger, emoji="👢", custom_id="ghost_kick")
-    async def kick_button(self, interaction: discord.Interaction, button: Button):
-        async with self.vote_lock:
-            await interaction.response.defer(thinking=True)
-            
-            # Check if already voted
-            if interaction.user.id in self.voted_admins:
-                await interaction.followup.send(
-                    "✅ You have already voted on this action.",
-                    ephemeral=True
-                )
-                return
-            
-            self.voted_admins.add(interaction.user.id)
-            
-            # Execute kick
-            success, message = await self.cleanup_system.kick_user(
-                self.member, 
-                interaction.user
-            )
-            
-            if success:
-                # Disable all buttons
-                for child in self.children:
-                    child.disabled = True
-                
-                # Store message reference for timeout handling
-                self._message = interaction.message
-                
-                # Update message
-                try:
-                    await interaction.message.edit(view=self)
-                except:
-                    pass
-                
-                await interaction.followup.send(
-                    f"✅ {message}",
-                    ephemeral=True
-                )
-            else:
-                await interaction.followup.send(
-                    f"❌ {message}",
-                    ephemeral=True
-                )
-
-class DemotionReviewView(BaseAdminView):
-    """View for demotion review voting with stability fixes"""
-    
-    def __init__(self, member: discord.Member, cleanup_system):
-        super().__init__(member, cleanup_system, timeout=86400)
-        self.demote_votes = set()
-        self.keep_votes = set()
-        self.votes_needed = 2  # Need 2 admins to agree
-    
-    @discord.ui.button(label="Demote", style=discord.ButtonStyle.primary, emoji="⬇️", custom_id="demote_vote")
-    async def demote_button(self, interaction: discord.Interaction, button: Button):
-        async with self.vote_lock:
-            await self._handle_vote(interaction, "demote")
+        """Handle timeout - disable buttons"""
+        for item in self.children:
+            if isinstance(item, Button):
+                item.disabled = True
         
-    @discord.ui.button(label="Keep Role", style=discord.ButtonStyle.success, emoji="✅", custom_id="keep_vote")
-    async def keep_button(self, interaction: discord.Interaction, button: Button):
-        async with self.vote_lock:
-            await self._handle_vote(interaction, "keep")
-    
-    async def _handle_vote(self, interaction: discord.Interaction, vote_type: str):
-        await interaction.response.defer(thinking=True)
-        
-        voter_id = interaction.user.id
-        
-        # Remove from other vote category if already voted
-        if voter_id in self.demote_votes:
-            self.demote_votes.remove(voter_id)
-        if voter_id in self.keep_votes:
-            self.keep_votes.remove(voter_id)
-        
-        # Add to new vote category
-        if vote_type == "demote":
-            self.demote_votes.add(voter_id)
-        else:
-            self.keep_votes.add(voter_id)
-        
-        total_votes = len(self.demote_votes) + len(self.keep_votes)
-        
-        # Send vote confirmation
-        await interaction.followup.send(
-            f"📊 Vote recorded!\n"
-            f"Demote: {len(self.demote_votes)}\n"
-            f"Keep: {len(self.keep_votes)}\n"
-            f"Need {self.votes_needed - total_votes} more vote(s).",
-            ephemeral=True
-        )
-        
-        # Check if we have enough votes
-        if total_votes >= self.votes_needed:
-            if len(self.demote_votes) > len(self.keep_votes):
-                # Demote user
-                success, message = await self.cleanup_system.demote_user(
-                    self.member, 
-                    interaction.user
-                )
-                
-                if success:
-                    # Disable all buttons
-                    for child in self.children:
-                        child.disabled = True
-                    
-                    self._message = interaction.message
-                    try:
-                        await interaction.message.edit(view=self)
-                    except:
-                        pass
-            else:
-                # Keep role
-                await self.cleanup_system._log_admin_action(
-                    "keep", 
-                    self.member, 
-                    interaction.user
-                )
-                
-                # Disable all buttons
-                for child in self.children:
-                    child.disabled = True
-                
-                self._message = interaction.message
-                try:
-                    await interaction.message.edit(view=self)
-                except:
-                    pass
-
-class ReturnReviewView(BaseAdminView):
-    """View for returning user review"""
-    
-    def __init__(self, member: discord.Member, cleanup_system):
-        super().__init__(member, cleanup_system, timeout=86400)
-        self.days_inactive = cleanup_system.get_inactivity_days(member.id)
-        self.server_name = member.guild.name
-    
-    @discord.ui.button(label="Promote", style=discord.ButtonStyle.success, emoji="⬆️", custom_id="promote_user")
-    async def promote_button(self, interaction: discord.Interaction, button: Button):
-        async with self.vote_lock:
-            await self._handle_promote(interaction)
-    
-    @discord.ui.button(label="Review", style=discord.ButtonStyle.secondary, emoji="🔍", custom_id="review_user")
-    async def review_button(self, interaction: discord.Interaction, button: Button):
-        async with self.vote_lock:
-            await self._handle_review(interaction)
-    
-    async def _handle_promote(self, interaction: discord.Interaction):
-        await interaction.response.defer(thinking=True)
-        
-        # Log who is taking action
-        print(f"👑 {interaction.user.display_name} promoting {self.member.display_name}")
-        
-        success, message = await self.cleanup_system.promote_user(
-            self.member, 
-            interaction.user
-        )
-        
-        if success:
-            # Update activity tracking (user is now active)
-            await self.cleanup_system.track_user_activity(self.member.id, "promoted_back")
-            
-            # Disable all buttons
-            for child in self.children:
-                child.disabled = True
-            
-            self._message = interaction.message
+        # Update message if possible
+        if hasattr(self, 'message'):
             try:
-                await interaction.message.edit(view=self)
+                await self.message.edit(view=self)
             except:
                 pass
-        
-        await interaction.followup.send(
-            f"{'✅' if success else '❌'} {message}",
-            ephemeral=True
-        )
     
-    async def _handle_review(self, interaction: discord.Interaction):
-        await interaction.response.defer(thinking=True)
-        
-        print(f"🔍 {interaction.user.display_name} putting {self.member.display_name} under review")
-        
-        # Put user under review
-        await self.cleanup_system.put_user_under_review(self.member)
-        
-        # Disable buttons
-        for child in self.children:
-            child.disabled = True
-        
-        self._message = interaction.message
-        try:
-            await interaction.message.edit(view=self)
-        except:
-            pass
-        
-        await interaction.followup.send(
-            f"✅ User {self.member.display_name} has been put under review.",
-            ephemeral=True
-        )
-
-class FinalReviewView(BaseAdminView):
-    """View for final review voting with stability fixes"""
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: Button):
+        """Handle errors"""
+        await interaction.response.send_message(f"❌ An error occurred: {str(error)}", ephemeral=True)
     
-    def __init__(self, member: discord.Member, cleanup_system):
-        super().__init__(member, cleanup_system, timeout=86400)
-        self.promote_votes = set()
-        self.kick_votes = set()
-        self.votes_needed = 2
-        self.days_inactive = cleanup_system.get_inactivity_days(member.id)
-    
-    @discord.ui.button(label="Promote", style=discord.ButtonStyle.success, emoji="⬆️", custom_id="final_promote")
-    async def promote_button(self, interaction: discord.Interaction, button: Button):
-        async with self.vote_lock:
-            await self._handle_vote(interaction, "promote")
-    
-    @discord.ui.button(label="Kick", style=discord.ButtonStyle.danger, emoji="👢", custom_id="final_kick")
-    async def kick_button(self, interaction: discord.Interaction, button: Button):
-        async with self.vote_lock:
-            await self._handle_vote(interaction, "kick")
-    
-    async def _handle_vote(self, interaction: discord.Interaction, vote_type: str):
-        await interaction.response.defer(thinking=True)
+    async def handle_vote(self, interaction: discord.Interaction, action: str):
+        """Handle voting logic"""
+        user_id = interaction.user.id
         
-        voter_id = interaction.user.id
+        if user_id in self.voters:
+            await interaction.response.send_message("⚠️ You have already voted on this user!", ephemeral=True)
+            return
         
-        # Remove from other vote category if already voted
-        if voter_id in self.promote_votes:
-            self.promote_votes.remove(voter_id)
-        if voter_id in self.kick_votes:
-            self.kick_votes.remove(voter_id)
+        # Add to voters
+        self.voters.add(user_id)
         
-        # Add to new vote category
-        if vote_type == "promote":
-            self.promote_votes.add(voter_id)
-            action = "voted to PROMOTE"
-        else:
-            self.kick_votes.add(voter_id)
-            action = "voted to KICK"
+        # Update vote count
+        if action == "kick":
+            self.vote_result["kick"] += 1
+        elif action == "grant":
+            self.vote_result["grant"] += 1
+        elif action == "review":
+            self.vote_result["review"] += 1
         
-        print(f"🗳️ {interaction.user.display_name} {action} {self.member.display_name}")
-        
-        total_votes = len(self.promote_votes) + len(self.kick_votes)
-        
-        # Send vote confirmation
-        await interaction.followup.send(
-            f"📊 Vote recorded!\n"
-            f"Promote: {len(self.promote_votes)}\n"
-            f"Kick: {len(self.kick_votes)}\n"
-            f"Need {self.votes_needed - total_votes} more vote(s).",
-            ephemeral=True
-        )
-        
-        # Check if we have enough votes
-        if total_votes >= self.votes_needed:
-            if len(self.promote_votes) > len(self.kick_votes):
-                # Promote user
-                success, message = await self.cleanup_system.promote_user(
-                    self.member, 
-                    interaction.user
-                )
-                
-                if success:
-                    # Disable all buttons
-                    for child in self.children:
-                        child.disabled = True
-                    
-                    self._message = interaction.message
-                    try:
-                        await interaction.message.edit(view=self)
-                    except:
-                        pass
+        # Check if we have a decision (1 vote needed as per requirements)
+        if len(self.voters) >= 1:
+            # Determine action based on votes
+            if self.vote_result["kick"] > 0:
+                final_action = "kick"
+            elif self.vote_result["grant"] > 0:
+                final_action = "grant"
+            elif self.vote_result["review"] > 0:
+                final_action = "review"
             else:
-                # Kick user
-                success, message = await self.cleanup_system.kick_user(
-                    self.member,
-                    interaction.user
-                )
+                final_action = None
+            
+            if final_action:
+                # Call cleanup system to handle the action
+                cleanup_cog = self.bot.get_cog("CleanupSystem")
+                if cleanup_cog:
+                    await cleanup_cog.handle_vote_action(
+                        f"{final_action}_{self.vote_type}",
+                        self.user_id,
+                        interaction.user,
+                        interaction.message.id
+                    )
                 
-                if success:
-                    # Disable all buttons
-                    for child in self.children:
-                        child.disabled = True
+                # Disable buttons after decision
+                for item in self.children:
+                    if isinstance(item, Button):
+                        item.disabled = True
+                
+                # Update embed with result
+                embed = interaction.message.embeds[0] if interaction.message.embeds else None
+                if embed:
+                    embed.add_field(
+                        name="✅ Decision Made",
+                        value=f"**Action:** {final_action.upper()}\n"
+                              f"**By:** {interaction.user.mention}\n"
+                              f"**Time:** {datetime.utcnow().strftime('%H:%M:%S')}",
+                        inline=False
+                    )
+                    embed.color = discord.Color.green()
+                
+                await interaction.message.edit(embed=embed, view=self)
+                await interaction.response.send_message(f"✅ Vote registered! Action `{final_action}` will be executed.", ephemeral=True)
+            else:
+                await interaction.response.send_message("✅ Vote registered!", ephemeral=True)
+        else:
+            await interaction.response.send_message("✅ Vote registered! Waiting for more votes...", ephemeral=True)
+    
+    @discord.ui.button(style=discord.ButtonStyle.red, label="🚫 Kick", custom_id="ghost_kick")
+    async def kick_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_vote(interaction, "kick")
+    
+    @discord.ui.button(style=discord.ButtonStyle.green, label="✨ Grant Role", custom_id="ghost_grant")
+    async def grant_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_vote(interaction, "grant")
+    
+    @discord.ui.button(style=discord.ButtonStyle.grey, label="📝 Review", custom_id="ghost_review")
+    async def review_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_vote(interaction, "review")
+
+class DemotionVoteView(View):
+    def __init__(self, bot, user_id: int, vote_type: str, timeout: Optional[float] = None):
+        super().__init__(timeout=timeout)
+        self.bot = bot
+        self.user_id = user_id
+        self.vote_type = vote_type
+        self.voters = set()
+        self.vote_result = {"demote": 0, "review": 0}
+        
+        self.add_item(Button(style=discord.ButtonStyle.red, label="📉 Demote", custom_id=f"inactive_demote_{user_id}"))
+        self.add_item(Button(style=discord.ButtonStyle.grey, label="📝 Review", custom_id=f"inactive_review_{user_id}"))
+    
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        cleanup_cog = self.bot.get_cog("CleanupSystem")
+        if cleanup_cog:
+            return await cleanup_cog.check_admin_permission(interaction.user)
+        return False
+    
+    async def handle_vote(self, interaction: discord.Interaction, action: str):
+        user_id = interaction.user.id
+        
+        if user_id in self.voters:
+            await interaction.response.send_message("⚠️ You have already voted!", ephemeral=True)
+            return
+        
+        self.voters.add(user_id)
+        
+        if action == "demote":
+            self.vote_result["demote"] += 1
+        elif action == "review":
+            self.vote_result["review"] += 1
+        
+        if len(self.voters) >= 1:
+            final_action = "demote" if self.vote_result["demote"] > 0 else "review"
+            
+            cleanup_cog = self.bot.get_cog("CleanupSystem")
+            if cleanup_cog:
+                if final_action == "demote":
+                    await cleanup_cog.handle_vote_action(
+                        f"demote_{self.vote_type}",
+                        self.user_id,
+                        interaction.user,
+                        interaction.message.id
+                    )
+                elif final_action == "review":
+                    # Mark as under review
+                    if self.user_id not in cleanup_cog.under_review:
+                        cleanup_cog.under_review[self.user_id] = datetime.utcnow()
                     
-                    self._message = interaction.message
-                    try:
-                        await interaction.message.edit(view=self)
-                    except:
-                        pass
+                    # Create under review voting
+                    view = UnderReviewVoteView(self.bot, self.user_id, "under_review")
+                    
+                    embed = interaction.message.embeds[0]
+                    embed.title = "📋 Under Review - Verified Member"
+                    embed.description += f"\n\n**Status:** Under Review\n**Review Started:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
+                    embed.color = discord.Color.blue()
+                    
+                    await interaction.message.edit(embed=embed, view=view)
+            
+            for item in self.children:
+                if isinstance(item, Button):
+                    item.disabled = True
+            
+            await interaction.response.send_message(f"✅ Vote registered! Action `{final_action}` executed.", ephemeral=True)
+        else:
+            await interaction.response.send_message("✅ Vote registered!", ephemeral=True)
+    
+    @discord.ui.button(style=discord.ButtonStyle.red, label="📉 Demote", custom_id="inactive_demote")
+    async def demote_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_vote(interaction, "demote")
+    
+    @discord.ui.button(style=discord.ButtonStyle.grey, label="📝 Review", custom_id="inactive_review")
+    async def review_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_vote(interaction, "review")
+
+class DemotedUserActionView(View):
+    def __init__(self, bot, user_id: int, vote_type: str, timeout: Optional[float] = None):
+        super().__init__(timeout=timeout)
+        self.bot = bot
+        self.user_id = user_id
+        self.vote_type = vote_type
+        self.voters = set()
+        
+        self.add_item(Button(style=discord.ButtonStyle.green, label="⬆️ Promote", custom_id=f"demoted_promote_{user_id}"))
+        self.add_item(Button(style=discord.ButtonStyle.red, label="🚫 Kick", custom_id=f"demoted_kick_{user_id}"))
+        self.add_item(Button(style=discord.ButtonStyle.grey, label="📝 Review", custom_id=f"demoted_review_{user_id}"))
+    
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        cleanup_cog = self.bot.get_cog("CleanupSystem")
+        if cleanup_cog:
+            return await cleanup_cog.check_admin_permission(interaction.user)
+        return False
+    
+    async def handle_vote(self, interaction: discord.Interaction, action: str):
+        user_id = interaction.user.id
+        
+        if user_id in self.voters:
+            await interaction.response.send_message("⚠️ Already voted!", ephemeral=True)
+            return
+        
+        self.voters.add(user_id)
+        
+        if len(self.voters) >= 1:
+            cleanup_cog = self.bot.get_cog("CleanupSystem")
+            if cleanup_cog:
+                if action == "promote":
+                    await cleanup_cog.handle_vote_action(
+                        "promote_demoted",
+                        self.user_id,
+                        interaction.user,
+                        interaction.message.id
+                    )
+                elif action == "kick":
+                    await cleanup_cog.handle_vote_action(
+                        "kick_demoted",
+                        self.user_id,
+                        interaction.user,
+                        interaction.message.id
+                    )
+                elif action == "review":
+                    # Mark as under review
+                    if self.user_id not in cleanup_cog.under_review:
+                        cleanup_cog.under_review[self.user_id] = datetime.utcnow()
+                    
+                    embed = interaction.message.embeds[0]
+                    embed.title = f"📋 Under Review - Demoted User"
+                    embed.description += f"\n\n**Status:** Under Review\n**By:** {interaction.user.mention}"
+                    embed.color = discord.Color.blue()
+                    
+                    await interaction.message.edit(embed=embed)
+            
+            for item in self.children:
+                if isinstance(item, Button):
+                    item.disabled = True
+            
+            await interaction.response.send_message(f"✅ Action `{action}` executed!", ephemeral=True)
+        else:
+            await interaction.response.send_message("✅ Vote registered!", ephemeral=True)
+    
+    @discord.ui.button(style=discord.ButtonStyle.green, label="⬆️ Promote", custom_id="demoted_promote")
+    async def promote_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_vote(interaction, "promote")
+    
+    @discord.ui.button(style=discord.ButtonStyle.red, label="🚫 Kick", custom_id="demoted_kick")
+    async def kick_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_vote(interaction, "kick")
+    
+    @discord.ui.button(style=discord.ButtonStyle.grey, label="📝 Review", custom_id="demoted_review")
+    async def review_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_vote(interaction, "review")
+
+class UnderReviewVoteView(View):
+    def __init__(self, bot, user_id: int, vote_type: str, timeout: Optional[float] = None):
+        super().__init__(timeout=timeout)
+        self.bot = bot
+        self.user_id = user_id
+        self.vote_type = vote_type
+        self.voters = set()
+        
+        self.add_item(Button(style=discord.ButtonStyle.green, label="✅ Pardon", custom_id=f"review_pardon_{user_id}"))
+        self.add_item(Button(style=discord.ButtonStyle.red, label="📉 Demote", custom_id=f"review_demote_{user_id}"))
+    
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        cleanup_cog = self.bot.get_cog("CleanupSystem")
+        if cleanup_cog:
+            return await cleanup_cog.check_admin_permission(interaction.user)
+        return False
+    
+    async def handle_vote(self, interaction: discord.Interaction, action: str):
+        user_id = interaction.user.id
+        
+        if user_id in self.voters:
+            await interaction.response.send_message("⚠️ Already voted!", ephemeral=True)
+            return
+        
+        self.voters.add(user_id)
+        
+        if len(self.voters) >= 1:
+            cleanup_cog = self.bot.get_cog("CleanupSystem")
+            if cleanup_cog:
+                if action == "pardon":
+                    # Keep the verified role
+                    guild = self.bot.get_guild(self.bot.config.guild_id)
+                    if guild:
+                        target_user = guild.get_member(self.user_id)
+                        if target_user:
+                            # Remove from under review
+                            cleanup_cog.under_review.pop(self.user_id, None)
+                            cleanup_cog.demotion_candidates.pop(self.user_id, None)
+                            
+                            embed = interaction.message.embeds[0]
+                            embed.title = "✅ Pardoned - Keeps Role"
+                            embed.description += f"\n\n**Decision:** Pardoned\n**By:** {interaction.user.mention}\nUser keeps their verified role."
+                            embed.color = discord.Color.green()
+                            
+                            await interaction.message.edit(embed=embed, view=None)
+                
+                elif action == "demote":
+                    await cleanup_cog.handle_vote_action(
+                        "demote_verified",
+                        self.user_id,
+                        interaction.user,
+                        interaction.message.id
+                    )
+            
+            for item in self.children:
+                if isinstance(item, Button):
+                    item.disabled = True
+            
+            await interaction.response.send_message(f"✅ Action `{action}` executed!", ephemeral=True)
+        else:
+            await interaction.response.send_message("✅ Vote registered!", ephemeral=True)
+    
+    @discord.ui.button(style=discord.ButtonStyle.green, label="✅ Pardon", custom_id="review_pardon")
+    async def pardon_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_vote(interaction, "pardon")
+    
+    @discord.ui.button(style=discord.ButtonStyle.red, label="📉 Demote", custom_id="review_demote")
+    async def demote_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_vote(interaction, "demote")
