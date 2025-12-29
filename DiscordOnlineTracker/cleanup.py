@@ -3,6 +3,42 @@ from discord.ext import commands, tasks
 import asyncio
 from datetime import datetime, timedelta
 import logging
+# cleanup.py
+import discord
+import asyncio
+# ... your other imports ...
+
+# ======== ADD THIS CLASS DEFINITION ========
+class InactiveMemberVoteView(discord.ui.View):
+    def __init__(self, member_id, clan_name):
+        super().__init__(timeout=86400)
+        self.member_id = member_id
+        self.clan_name = clan_name
+        self.votes = {'kick': 0, 'keep': 0}
+        self.voters = set()
+
+    @discord.ui.button(label="Kick", style=discord.ButtonStyle.danger)
+    async def kick_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id in self.voters:
+            await interaction.response.send_message("Already voted!", ephemeral=True)
+            return
+        self.votes['kick'] += 1
+        self.voters.add(interaction.user.id)
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Keep", style=discord.ButtonStyle.success)
+    async def keep_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id in self.voters:
+            await interaction.response.send_message("Already voted!", ephemeral=True)
+            return
+        self.votes['keep'] += 1
+        self.voters.add(interaction.user.id)
+        await interaction.response.defer()
+# ======== END OF CLASS DEFINITION ========
+
+# Your existing functions continue below...
+async def check_inactive_members():
+    # ... your existing code that uses InactiveMemberVoteView ...
 
 logger = logging.getLogger(__name__)
 
