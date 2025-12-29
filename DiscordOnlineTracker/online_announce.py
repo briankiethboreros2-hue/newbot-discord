@@ -41,6 +41,7 @@ class OnlineAnnounceSystem:
             return
         
         # Check if status changed from offline to online (not idle/dnd)
+        # Only announce when explicitly coming online from offline
         if (before.status == discord.Status.offline and 
             after.status == discord.Status.online):
             await self.announce_online(after)
@@ -68,7 +69,7 @@ class OnlineAnnounceSystem:
             # Get attendance channel
             channel = self.bot.get_channel(1437768842871832597)  # ATTENDANCE_CHANNEL
             if not channel:
-                logger.error(f"Attendance channel not found!")
+                logger.error("Attendance channel not found!")
                 return
             
             # Get member's highest role for announcement
