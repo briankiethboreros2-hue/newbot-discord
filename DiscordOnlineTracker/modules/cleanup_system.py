@@ -1,876 +1,379 @@
-"""
-ENHANCED CLEANUP SYSTEM WITH STABILITY FIXES
-- Fixed JSON serialization issues
-- Prevents Cloudflare bans with rate limiting
-- Fixes member display issues
-- Prevents spamming
-- Adds proper timeout handling
-- Includes Discord profiles
-"""
-
 import discord
+from discord.ext import commands, tasks
+from datetime import datetime, timedelta
 import asyncio
-import json
-import os
-import time
-from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 import aiohttp
+from button_views import (
+    GhostUserVoteView, 
+    DemotionVoteView, 
+    DemotedUserActionView,
+    UnderReviewVoteView
+)
 
-class CleanupSystem:
-    def __init__(self, client, config):
-        self.client = client
-        self.config = config
+class CleanupSystem(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.ghost_users = {}  # user_id: join_date
+        self.demotion_candidates = {}  # user_id: last_active_date
+        self.demoted_users = {}  # user_id: demotion_date
+        self.under_review = {}  # user_id: review_start_date
+        self.user_last_active = {}  # user_id: last_activity_datetime
         
-        # Load data with proper serialization handling
-        self.user_activity = self.load_json('data/user_activity.json', {})
-        self.demoted_users = self.load_json('data/demoted_users.json', {})
-        self.demotion_posts = self.load_json('data/demotion_posts.json', {})
+        # Role IDs
+        self.VERIFIED_ROLE_ID = 1437570031822176408
+        self.INACTIVE_ROLE_ID = 1454803208995340328
         
-        self.last_cleanup_run = 0
-        self.last_demotion_post = {}
+        # Channel IDs
+        self.ADMIN_CHANNEL_ID = 1455138098437689387
+        self.CLEANUP_CHANNEL_ID = 1454802873300025396
+        self.GREET_CHANNEL_ID = 1369091668724154419
         
-        # Rate limiting protection
-        self.api_calls = []
-        self.max_api_calls = 30  # Conservative limit
-        self.api_window = 5
+        # Admin role IDs (can vote)
+        self.ADMIN_ROLES = [
+            1437572916005834793,
+            1437578521374363769,
+            1389835747040694332
+        ]
         
-        # Configuration
-        self.demotion_threshold = 15  # 15+ days for demotion
-        self.ghost_threshold = 7      # 7+ days without roles
-        self.cleanup_cooldown = 21600  # 6 hours between runs
+        # Start background tasks
+        self.cleanup_check.start()
+        self.check_inactive_verified.start()
+        self.check_active_demoted.start()
         
-        # Track recent operations to prevent duplicates
-        self.recent_operations = {}
+    def cog_unload(self):
+        self.cleanup_check.cancel()
+        self.check_inactive_verified.cancel()
+        self.check_active_demoted.cancel()
+    
+    async def check_admin_permission(self, user: discord.Member) -> bool:
+        """Check if user has admin voting permissions"""
+        user_role_ids = [role.id for role in user.roles]
+        return any(role_id in self.ADMIN_ROLES for role_id in user_role_ids)
+    
+    @tasks.loop(hours=1)
+    async def cleanup_check(self):
+        """Check for ghost users (no roles for 7+ days)"""
+        await self.bot.wait_until_ready()
         
-        print("✅ Cleanup system initialized with stability fixes")
-    
-    # ==================== FIXED JSON UTILITY METHODS ====================
-    
-    def serialize_for_json(self, obj: Any) -> Any:
-        """Convert datetime objects to ISO strings for JSON serialization"""
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        elif isinstance(obj, dict):
-            return {key: self.serialize_for_json(value) for key, value in obj.items()}
-        elif isinstance(obj, list):
-            return [self.serialize_for_json(item) for item in obj]
-        elif isinstance(obj, (int, float, str, bool, type(None))):
-            return obj
-        else:
-            # Convert to string representation for other types
-            return str(obj)
-    
-    def deserialize_from_json(self, obj: Any) -> Any:
-        """Convert ISO strings back to datetime objects after loading"""
-        if isinstance(obj, str):
-            # Try to parse as datetime
-            try:
-                # Handle different datetime formats
-                for fmt in ('%Y-%m-%dT%H:%M:%S.%f%z', '%Y-%m-%dT%H:%M:%S%z', 
-                           '%Y-%m-%d %H:%M:%S.%f%z', '%Y-%m-%d %H:%M:%S%z'):
-                    try:
-                        return datetime.strptime(obj, fmt)
-                    except ValueError:
-                        continue
-                # If no timezone info, add UTC
-                if 'T' in obj and '+' not in obj and 'Z' not in obj:
-                    obj = obj + '+00:00'
-                    return datetime.fromisoformat(obj)
-            except (ValueError, AttributeError):
-                return obj
-        elif isinstance(obj, dict):
-            return {key: self.deserialize_from_json(value) for key, value in obj.items()}
-        elif isinstance(obj, list):
-            return [self.deserialize_from_json(item) for item in obj]
-        return obj
-    
-    def load_json(self, path: str, default: Any) -> Any:
-        """Safe JSON loading with datetime handling"""
-        try:
-            if os.path.exists(path):
-                with open(path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    # Deserialize datetime strings back to datetime objects
-                    return self.deserialize_from_json(data)
-        except (json.JSONDecodeError, IOError, ValueError) as e:
-            print(f"⚠️ Error loading {path}: {e}, using default")
-        return default
-    
-    def save_json(self, path: str, data: Any) -> bool:
-        """Safe JSON saving with datetime serialization"""
-        try:
-            # Create directory if it doesn't exist
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            
-            # Serialize datetime objects to strings
-            serialized_data = self.serialize_for_json(data)
-            
-            # Write to temp file first
-            temp_path = f"{path}.tmp"
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(serialized_data, f, indent=2, ensure_ascii=False)
-            
-            # Verify the JSON is valid
-            with open(temp_path, 'r', encoding='utf-8') as f:
-                json.load(f)
-            
-            # Atomic replace
-            os.replace(temp_path, path)
-            return True
-        except Exception as e:
-            print(f"❌ Error saving {path}: {type(e).__name__}: {e}")
-            return False
-    
-    async def rate_limit_check(self):
-        """Enforce rate limiting to prevent Cloudflare bans"""
-        current_time = time.time()
+        guild = self.bot.get_guild(self.bot.config.guild_id)
+        if not guild:
+            return
         
-        # Remove calls older than window
-        self.api_calls = [t for t in self.api_calls if current_time - t < self.api_window]
+        cleanup_channel = guild.get_channel(self.CLEANUP_CHANNEL_ID)
+        admin_channel = guild.get_channel(self.ADMIN_CHANNEL_ID)
         
-        # If approaching limit, wait
-        if len(self.api_calls) >= self.max_api_calls:
-            oldest_call = self.api_calls[0]
-            wait_time = self.api_window - (current_time - oldest_call) + 0.1
-            if wait_time > 0:
-                print(f"⏱️ Cleanup system rate limit approaching, waiting {wait_time:.1f}s")
-                await asyncio.sleep(wait_time)
-                self.api_calls = []
+        if not cleanup_channel or not admin_channel:
+            return
         
-        # Record this call
-        self.api_calls.append(current_time)
-    
-    def cleanup_old_tracking(self):
-        """Remove old tracking data to prevent memory bloat"""
-        current_time = time.time()
-        week_ago = current_time - (7 * 86400)
+        current_time = datetime.utcnow()
+        seven_days_ago = current_time - timedelta(days=7)
         
-        # Clean user activity older than 30 days
-        if hasattr(self, 'user_activity'):
-            for user_id in list(self.user_activity.keys()):
-                user_data = self.user_activity[user_id]
-                last_seen = user_data.get('last_seen')
-                if isinstance(last_seen, datetime):
-                    last_seen = last_seen.timestamp()
-                elif isinstance(last_seen, str):
-                    try:
-                        last_seen = datetime.fromisoformat(last_seen.replace('Z', '+00:00')).timestamp()
-                    except:
-                        last_seen = 0
+        for member in guild.members:
+            # Check for ghost users (no roles except @everyone)
+            if len(member.roles) <= 1:  # Only @everyone role
+                join_date = member.joined_at
                 
-                if last_seen and last_seen < week_ago:
-                    del self.user_activity[user_id]
-        
-        # Clean recent operations older than 1 hour
-        current_time = time.time()
-        for key in list(self.recent_operations.keys()):
-            if current_time - self.recent_operations[key] > 3600:
-                del self.recent_operations[key]
-    
-    # ==================== FIXED ACTIVITY TRACKING ====================
-    
-    async def track_user_activity(self, user_id: int, activity_type: str = "message"):
-        """Track user activity with rate limiting"""
-        try:
-            await self.rate_limit_check()
-            
-            uid = str(user_id)
-            current_time = time.time()
-            current_datetime = datetime.now(timezone.utc)
-            
-            if uid not in self.user_activity:
-                self.user_activity[uid] = {
-                    'last_seen': current_datetime,
-                    'last_message': current_datetime,
-                    'last_presence': current_datetime,
-                    'activities': []
-                }
-            
-            self.user_activity[uid]['last_seen'] = current_datetime
-            
-            if activity_type == "message":
-                self.user_activity[uid]['last_message'] = current_datetime
-            elif activity_type == "presence_update":
-                self.user_activity[uid]['last_presence'] = current_datetime
-            
-            # Track last 10 activities with proper datetime objects
-            self.user_activity[uid]['activities'].append({
-                'type': activity_type,
-                'time': current_datetime
-            })
-            
-            if len(self.user_activity[uid]['activities']) > 10:
-                self.user_activity[uid]['activities'] = self.user_activity[uid]['activities'][-10:]
-            
-            # Save periodically (not every time)
-            if int(current_time) % 300 == 0:  # Every 5 minutes
-                self.save_all_data()
-                
-        except Exception as e:
-            print(f"⚠️ Error tracking activity: {e}")
-    
-    def get_last_activity(self, user_id: int) -> Optional[datetime]:
-        """Get last activity timestamp for a user"""
-        uid = str(user_id)
-        if uid in self.user_activity:
-            last_seen = self.user_activity[uid].get('last_seen')
-            # Ensure it's a datetime object
-            if isinstance(last_seen, str):
-                try:
-                    return datetime.fromisoformat(last_seen.replace('Z', '+00:00'))
-                except:
-                    return None
-            return last_seen
-        return None
-    
-    def calculate_days_inactive(self, last_activity: Optional[datetime]) -> int:
-        """Calculate days inactive from timestamp"""
-        if not last_activity:
-            return 999  # Default for unknown
-        
-        current_time = datetime.now(timezone.utc)
-        if isinstance(last_activity, str):
-            try:
-                last_activity = datetime.fromisoformat(last_activity.replace('Z', '+00:00'))
-            except:
-                return 999
-        
-        if isinstance(last_activity, (int, float)):
-            last_activity = datetime.fromtimestamp(last_activity, tz=timezone.utc)
-        
-        days_inactive = (current_time - last_activity).total_seconds() / 86400
-        return int(days_inactive)
-    
-    # ==================== DEMOTION SYSTEM ====================
-    
-    async def check_demotion_candidates(self, guild: discord.Guild) -> List[Dict]:
-        """Check for demotion candidates (15+ days inactive)"""
-        try:
-            imperius_role = guild.get_role(self.config['roles'].get('imperius'))
-            demoted_role = guild.get_role(self.config['roles'].get('demoted'))
-            
-            if not imperius_role or not demoted_role:
-                print("❌ Required roles not found for demotion check")
-                return []
-            
-            candidates = []
-            
-            for member in imperius_role.members:
-                if member.bot:
-                    continue
-                
-                # Check if already demoted
-                if demoted_role in member.roles:
-                    continue
-                
-                # Check for recent operation
-                operation_key = f"demotion_check_{member.id}"
-                if operation_key in self.recent_operations:
-                    continue
-                
-                self.recent_operations[operation_key] = time.time()
-                
-                # Get activity
-                last_active = self.get_last_activity(member.id)
-                days_inactive = self.calculate_days_inactive(last_active)
-                
-                # Check threshold (15+ days)
-                if days_inactive >= self.demotion_threshold:
-                    candidates.append({
-                        'member': member,
-                        'days_inactive': days_inactive,
-                        'last_active': last_active
-                    })
-                
-                # Small delay to prevent rate limiting
-                await asyncio.sleep(0.1)
-            
-            return candidates
-            
-        except Exception as e:
-            print(f"❌ Error in demotion check: {e}")
-            return []
-    
-    async def send_demotion_post(self, member_data: Dict) -> Optional[discord.Message]:
-        """Send demotion candidate post with proper formatting"""
-        try:
-            await self.rate_limit_check()
-            
-            member = member_data['member']
-            days_inactive = member_data['days_inactive']
-            last_active = member_data['last_active']
-            
-            # Check for duplicate recent post
-            member_id = str(member.id)
-            if member_id in self.last_demotion_post:
-                last_post_time = self.last_demotion_post[member_id]
-                if time.time() - last_post_time < 86400:  # 24 hours
-                    print(f"⏭️ Skipping duplicate demotion post for {member.display_name}")
-                    return None
-            
-            cleanup_channel = self.client.get_channel(self.config['channels'].get('cleanup'))
-            if not cleanup_channel:
-                print("❌ Cleanup channel not found")
-                return None
-            
-            # Format last active
-            if last_active:
-                if isinstance(last_active, str):
-                    try:
-                        last_active = datetime.fromisoformat(last_active.replace('Z', '+00:00'))
-                    except:
-                        last_active_str = last_active
-                elif isinstance(last_active, datetime):
-                    last_active_str = last_active.strftime("%Y-%m-%d %H:%M UTC")
-                else:
-                    last_active_str = str(last_active)
-            else:
-                last_active_str = "Unknown"
-            
-            # Get member's top roles (excluding @everyone)
-            member_roles = [role for role in member.roles if role.name != "@everyone"]
-            top_role = member_roles[-1].name if member_roles else "No special roles"
-            
-            # Create embed
-            embed = discord.Embed(
-                title="🟡 Demotion Candidate",
-                description=f"**{member.display_name}** is inactive for **{days_inactive} days**",
-                color=discord.Color.orange(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            
-            # Member info with avatar
-            embed.set_thumbnail(url=member.display_avatar.url)
-            
-            embed.add_field(
-                name="👤 Member Information",
-                value=f"**Name:** {member.display_name}\n"
-                      f"**ID:** `{member.id}`\n"
-                      f"**Server Join:** {member.joined_at.strftime('%Y-%m-%d') if member.joined_at else 'Unknown'}\n"
-                      f"**Top Role:** {top_role}",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="📊 Activity Status",
-                value=f"**Last Active:** {last_active_str}\n"
-                      f"**Days Inactive:** {days_inactive}\n"
-                      f"**Current Status:** {str(member.status).title()}",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="⚖️ Required Actions",
-                value="React below to vote:\n"
-                      "⬇️ - **Demote**: Keep in server with inactive role\n"
-                      "👢 - **Kick**: Remove from server\n"
-                      "✅ - **Spare**: Keep current role (needs 2+ admin votes)",
-                inline=False
-            )
-            
-            embed.set_footer(
-                text=f"Member ID: {member.id} • Votes will be tallied for 48 hours"
-            )
-            
-            # Send message
-            message = await cleanup_channel.send(embed=embed)
-            
-            # Add reaction buttons
-            await message.add_reaction("⬇️")   # Demote
-            await message.add_reaction("👢")   # Kick
-            await message.add_reaction("✅")   # Spare
-            
-            # Track this post
-            self.last_demotion_post[member_id] = time.time()
-            
-            if member_id not in self.demotion_posts:
-                self.demotion_posts[member_id] = []
-            
-            self.demotion_posts[member_id].append({
-                'message_id': message.id,
-                'channel_id': cleanup_channel.id,
-                'timestamp': datetime.now(timezone.utc),
-                'member_name': member.display_name,
-                'days_inactive': days_inactive
-            })
-            
-            self.save_json('data/demotion_posts.json', self.demotion_posts)
-            
-            print(f"📝 Demotion post created for {member.display_name} ({days_inactive} days inactive)")
-            return message
-            
-        except discord.HTTPException as e:
-            if e.status == 429:
-                print(f"🛑 Rate limited sending demotion post, waiting...")
-                await asyncio.sleep(getattr(e, 'retry_after', 30))
-                return await self.send_demotion_post(member_data)
-            else:
-                print(f"❌ HTTP error sending demotion post: {e}")
-                return None
-        except Exception as e:
-            print(f"❌ Error sending demotion post: {e}")
-            return None
-    
-    # ==================== GHOST CLEANUP SYSTEM ====================
-    
-    async def check_ghost_users(self, guild: discord.Guild) -> List[Dict]:
-        """Check for ghost users (7+ days without roles & inactive)"""
-        try:
-            ghosts = []
-            
-            # Get all members without roles (except @everyone)
-            for member in guild.members:
-                if member.bot:
-                    continue
-                
-                # Check if member has any roles besides @everyone
-                has_roles = len([r for r in member.roles if r.name != "@everyone"]) > 0
-                if has_roles:
-                    continue
-                
-                # Check for recent operation
-                operation_key = f"ghost_check_{member.id}"
-                if operation_key in self.recent_operations:
-                    continue
-                
-                self.recent_operations[operation_key] = time.time()
-                
-                # Get activity
-                last_active = self.get_last_activity(member.id)
-                days_inactive = self.calculate_days_inactive(last_active)
-                
-                # Check threshold (7+ days)
-                if days_inactive >= self.ghost_threshold:
-                    ghosts.append({
-                        'member': member,
-                        'days_inactive': days_inactive,
-                        'last_active': last_active,
-                        'join_date': member.joined_at
-                    })
-                
-                # Small delay
-                await asyncio.sleep(0.1)
-            
-            return ghosts
-            
-        except Exception as e:
-            print(f"❌ Error in ghost check: {e}")
-            return []
-    
-    async def send_ghost_report(self, ghost_data: Dict) -> Optional[discord.Message]:
-        """Send ghost user report"""
-        try:
-            await self.rate_limit_check()
-            
-            member = ghost_data['member']
-            days_inactive = ghost_data['days_inactive']
-            last_active = ghost_data['last_active']
-            join_date = ghost_data['join_date']
-            
-            cleanup_channel = self.client.get_channel(self.config['channels'].get('cleanup'))
-            if not cleanup_channel:
-                print("❌ Cleanup channel not found")
-                return None
-            
-            # Format dates
-            if last_active:
-                if isinstance(last_active, str):
-                    try:
-                        last_active = datetime.fromisoformat(last_active.replace('Z', '+00:00'))
-                        last_active_str = last_active.strftime("%Y-%m-%d %H:%M UTC")
-                    except:
-                        last_active_str = last_active
-                elif isinstance(last_active, datetime):
-                    last_active_str = last_active.strftime("%Y-%m-%d %H:%M UTC")
-                else:
-                    last_active_str = str(last_active)
-            else:
-                last_active_str = "Unknown"
-            
-            join_date_str = join_date.strftime("%Y-%m-%d") if join_date else "Unknown"
-            
-            # Create embed
-            embed = discord.Embed(
-                title="👻 Ghost User Detected",
-                description=f"User with no roles inactive for **{days_inactive} days**",
-                color=discord.Color.dark_gray(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            
-            # Member info with avatar
-            embed.set_thumbnail(url=member.display_avatar.url)
-            
-            embed.add_field(
-                name="👤 User Information",
-                value=f"**Name:** {member.display_name}\n"
-                      f"**ID:** `{member.id}`\n"
-                      f"**Discord:** {member.name}#{member.discriminator if hasattr(member, 'discriminator') else '0'}\n"
-                      f"**Server Join:** {join_date_str}",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="📊 Activity Status",
-                value=f"**Last Active:** {last_active_str}\n"
-                      f"**Days Inactive:** {days_inactive}\n"
-                      f"**Current Status:** {str(member.status).title()}\n"
-                      f"**Roles:** No roles assigned",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="⚠️ Recommended Action",
-                value="This user has been inactive for 7+ days with no roles.\n"
-                      "Consider removing them to keep the server clean.",
-                inline=False
-            )
-            
-            embed.set_footer(text=f"User ID: {member.id} • Detected on {datetime.now(timezone.utc).strftime('%Y-%m-%d')}")
-            
-            # Send message
-            message = await cleanup_channel.send(embed=embed)
-            
-            print(f"👻 Ghost report created for {member.display_name} ({days_inactive} days inactive)")
-            return message
-            
-        except discord.HTTPException as e:
-            if e.status == 429:
-                print(f"🛑 Rate limited sending ghost report, waiting...")
-                await asyncio.sleep(getattr(e, 'retry_after', 30))
-                return await self.send_ghost_report(ghost_data)
-            else:
-                print(f"❌ HTTP error sending ghost report: {e}")
-                return None
-        except Exception as e:
-            print(f"❌ Error sending ghost report: {e}")
-            return None
-    
-    # ==================== MAIN CLEANUP METHODS ====================
-    
-    async def run_cleanup_check(self, guild: discord.Guild):
-        """Main cleanup check with anti-spam and rate limiting"""
-        try:
-            current_time = time.time()
-            
-            # Check cooldown (6 hours minimum between runs)
-            if current_time - self.last_cleanup_run < self.cleanup_cooldown:
-                hours_left = (self.cleanup_cooldown - (current_time - self.last_cleanup_run)) / 3600
-                print(f"⏭️ Cleanup check on cooldown. Next run in {hours_left:.1f} hours")
-                return
-            
-            print(f"🧹 Starting cleanup check for {guild.name}...")
-            
-            # Run checks with delays between them
-            demotion_candidates = await self.check_demotion_candidates(guild)
-            await asyncio.sleep(2)  # Delay between checks
-            
-            ghost_users = await self.check_ghost_users(guild)
-            
-            # Process demotion candidates
-            demotion_count = 0
-            for candidate in demotion_candidates:
-                # Check if we should stop due to rate limiting
-                if len(self.api_calls) >= self.max_api_calls - 5:
-                    print("⚠️ Approaching rate limit, pausing demotion posts")
-                    await asyncio.sleep(5)
-                
-                message = await self.send_demotion_post(candidate)
-                if message:
-                    demotion_count += 1
-                    await asyncio.sleep(3)  # Delay between posts
-            
-            # Process ghost users
-            ghost_count = 0
-            for ghost in ghost_users:
-                if len(self.api_calls) >= self.max_api_calls - 5:
-                    print("⚠️ Approaching rate limit, pausing ghost reports")
-                    await asyncio.sleep(5)
-                
-                message = await self.send_ghost_report(ghost)
-                if message:
-                    ghost_count += 1
-                    await asyncio.sleep(3)  # Delay between posts
-            
-            # Update last run time
-            self.last_cleanup_run = current_time
-            
-            # Cleanup old tracking data
-            self.cleanup_old_tracking()
-            
-            print(f"✅ Cleanup check completed:")
-            print(f"   Demotion candidates: {demotion_count}")
-            print(f"   Ghost users: {ghost_count}")
-            print(f"   Next check in {self.cleanup_cooldown/3600} hours")
-            
-        except Exception as e:
-            print(f"❌ Error in main cleanup check: {type(e).__name__}: {e}")
-    
-    async def handle_user_return(self, member: discord.Member):
-        """Handle when a demoted user returns"""
-        try:
-            demoted_role = member.guild.get_role(self.config['roles'].get('demoted'))
-            imperius_role = member.guild.get_role(self.config['roles'].get('imperius'))
-            
-            if demoted_role and demoted_role in member.roles:
-                # Check bot permissions before attempting
-                bot_member = member.guild.get_member(self.client.user.id)
-                if not bot_member.guild_permissions.manage_roles:
-                    print(f"❌ Bot lacks permissions to manage roles for {member.display_name}")
-                    return
-                
-                # Remove demoted role
-                await member.remove_roles(demoted_role)
-                
-                # Add back imperius role
-                if imperius_role:
-                    await member.add_roles(imperius_role)
-                
-                # Send welcome back message
-                welcome_ch = self.client.get_channel(self.config['channels'].get('welcome'))
-                if welcome_ch:
-                    embed = discord.Embed(
-                        title="🎉 Welcome Back!",
-                        description=f"{member.mention} has returned and been restored to **Imperius** role!",
-                        color=discord.Color.green()
-                    )
-                    await welcome_ch.send(embed=embed)
-                
-                print(f"✅ Restored {member.display_name} to Imperius role")
-                
-        except discord.Forbidden as e:
-            print(f"❌ Permission error handling user return for {member.display_name}: {e}")
-        except Exception as e:
-            print(f"❌ Error handling user return: {type(e).__name__}: {e}")
-    
-    # ==================== REACTION HANDLING ====================
-    
-    async def handle_demotion_reaction(self, payload: discord.RawReactionActionEvent):
-        """Handle reactions on demotion posts"""
-        try:
-            # Only process in cleanup channel
-            cleanup_ch_id = self.config['channels'].get('cleanup')
-            if payload.channel_id != cleanup_ch_id:
-                return
-            
-            # Get the message
-            channel = self.client.get_channel(payload.channel_id)
-            if not channel:
-                return
-            
-            try:
-                message = await channel.fetch_message(payload.message_id)
-            except discord.NotFound:
-                return
-            except discord.Forbidden:
-                print(f"❌ Missing access to fetch message {payload.message_id}")
-                return
-            except discord.HTTPException as e:
-                if e.status == 403:
-                    print(f"❌ 403 Forbidden accessing message {payload.message_id}")
-                return
-            
-            # Check if it's a demotion post (has specific reactions)
-            if not any(str(r.emoji) in ["⬇️", "👢", "✅"] for r in message.reactions):
-                return
-            
-            # Get reactor
-            guild = self.client.get_guild(payload.guild_id)
-            if not guild:
-                return
-            
-            reactor = guild.get_member(payload.user_id)
-            
-            if not reactor or reactor.bot:
-                return
-            
-            # Check if reactor is admin
-            reactor_roles = [r.id for r in reactor.roles]
-            admin_roles = self.config.get('admin_roles', [])
-            
-            if not any(role_id in admin_roles for role_id in reactor_roles):
-                # Remove non-admin reaction
-                try:
-                    await message.remove_reaction(payload.emoji, reactor)
-                except:
-                    pass
-                return
-            
-            # Parse member ID from embed footer
-            if not message.embeds:
-                return
-            
-            embed = message.embeds[0]
-            footer = embed.footer.text
-            
-            # Extract member ID from footer
-            import re
-            match = re.search(r'Member ID: (\d+)', footer)
-            if not match:
-                return
-            
-            member_id = int(match.group(1))
-            member = guild.get_member(member_id)
-            
-            if not member:
-                print(f"❌ Member {member_id} not found in guild")
-                return
-            
-            # Count votes
-            reactions = message.reactions
-            vote_counts = {}
-            
-            for reaction in reactions:
-                emoji = str(reaction.emoji)
-                if emoji in ["⬇️", "👢", "✅"]:
-                    # Get users who reacted (excluding bots)
-                    try:
-                        users = [user async for user in reaction.users() if not user.bot]
-                        vote_counts[emoji] = len(users)
-                    except discord.Forbidden:
-                        print(f"❌ Missing access to fetch reaction users for {emoji}")
-                        vote_counts[emoji] = 0
-            
-            print(f"📊 Vote counts for {member.display_name}: {vote_counts}")
-            
-            # Check if we have a decision (2+ votes for any action)
-            for emoji, count in vote_counts.items():
-                if count >= 2:
-                    await self.process_demotion_decision(member, emoji, message)
-                    break
-            
-        except Exception as e:
-            print(f"❌ Error handling demotion reaction: {type(e).__name__}: {e}")
-    
-    async def process_demotion_decision(self, member: discord.Member, decision_emoji: str, message: discord.Message):
-        """Process the final demotion decision"""
-        try:
-            guild = member.guild
-            imperius_role = guild.get_role(self.config['roles'].get('imperius'))
-            demoted_role = guild.get_role(self.config['roles'].get('demoted'))
-            
-            # Check bot permissions
-            bot_member = guild.get_member(self.client.user.id)
-            if not bot_member.guild_permissions.manage_roles:
-                print(f"❌ Bot lacks permissions to manage roles for {member.display_name}")
-                return
-            
-            if decision_emoji == "⬇️":  # Demote
-                if imperius_role and imperius_role in member.roles and demoted_role:
-                    try:
-                        await member.remove_roles(imperius_role)
-                        await member.add_roles(demoted_role)
+                if join_date and join_date < seven_days_ago:
+                    user_id = member.id
+                    
+                    # Check if user is already being processed
+                    if user_id not in self.ghost_users:
+                        self.ghost_users[user_id] = join_date
                         
-                        # Update embed
-                        embed = message.embeds[0]
-                        embed.color = discord.Color.blue()
-                        embed.add_field(
-                            name="✅ Decision Reached",
-                            value=f"**DEMOTED** by admin vote\n"
-                                  f"{member.display_name} has been moved to Demoted role.",
-                            inline=False
+                        # Create embed for voting
+                        embed = discord.Embed(
+                            title="👻 Ghost User Detected",
+                            description=f"**User:** {member.mention} ({member.display_name})\n"
+                                      f"**User ID:** `{user_id}`\n"
+                                      f"**Status:** Has no roles for 7+ days\n"
+                                      f"**Joined:** {join_date.strftime('%Y-%m-%d %H:%M')}",
+                            color=discord.Color.orange(),
+                            timestamp=current_time
                         )
+                        embed.set_footer(text=f"Member #{len(self.ghost_users) + 1}")
                         
-                        await message.edit(embed=embed)
+                        # Send to cleanup channel for voting
+                        view = GhostUserVoteView(self.bot, user_id, "ghost")
+                        message = await cleanup_channel.send(embed=embed, view=view)
                         
-                        # Send DM
-                        try:
-                            await member.send(
-                                f"👋 Hello {member.display_name},\n\n"
-                                f"Due to extended inactivity, you have been moved to the **Demoted** role in **{guild.name}**.\n"
-                                f"You can regain your Imperius role by becoming active again!\n\n"
-                                f"Server: {guild.name}"
-                            )
-                        except discord.Forbidden:
-                            print(f"⚠️ Cannot DM {member.display_name}")
-                        
-                        print(f"✅ Demoted {member.display_name}")
-                    except discord.Forbidden as e:
-                        print(f"❌ Permission error demoting {member.display_name}: {e}")
-            
-            elif decision_emoji == "👢":  # Kick
-                # Check bot permissions
-                if bot_member.guild_permissions.kick_members:
-                    try:
-                        await member.kick(reason="Inactive for 15+ days (admin vote)")
-                        
-                        # Update embed
-                        embed = message.embeds[0]
-                        embed.color = discord.Color.red()
-                        embed.add_field(
-                            name="✅ Decision Reached",
-                            value=f"**KICKED** by admin vote\n"
-                                  f"{member.display_name} has been removed from the server.",
-                            inline=False
+                        # Also notify admin channel
+                        admin_embed = discord.Embed(
+                            title="⚠️ New Ghost User Alert",
+                            description=f"A ghost user has been detected and added to cleanup queue.\n"
+                                      f"**User:** {member.mention}\n"
+                                      f"**Check:** <#{self.CLEANUP_CHANNEL_ID}>",
+                            color=discord.Color.gold()
                         )
-                        
-                        await message.edit(embed=embed)
-                        print(f"✅ Kicked {member.display_name}")
-                    except discord.Forbidden as e:
-                        print(f"❌ Permission error kicking {member.display_name}: {e}")
-                else:
-                    print(f"❌ Bot lacks kick permissions for {member.display_name}")
+                        await admin_channel.send(embed=admin_embed)
+    
+    @tasks.loop(hours=2)
+    async def check_inactive_verified(self):
+        """Check verified members inactive for 15+ days"""
+        await self.bot.wait_until_ready()
+        
+        guild = self.bot.get_guild(self.bot.config.guild_id)
+        if not guild:
+            return
+        
+        admin_channel = guild.get_channel(self.ADMIN_CHANNEL_ID)
+        if not admin_channel:
+            return
+        
+        verified_role = guild.get_role(self.VERIFIED_ROLE_ID)
+        if not verified_role:
+            return
+        
+        current_time = datetime.utcnow()
+        fifteen_days_ago = current_time - timedelta(days=15)
+        
+        for member in verified_role.members:
+            user_id = member.id
             
-            elif decision_emoji == "✅":  # Spare
-                # Update embed
-                embed = message.embeds[0]
-                embed.color = discord.Color.green()
-                embed.add_field(
-                    name="✅ Decision Reached",
-                    value=f"**SPARED** by admin vote\n"
-                          f"{member.display_name} will keep their current role.",
-                    inline=False
+            # Skip if already being processed
+            if user_id in self.demotion_candidates or user_id in self.under_review:
+                continue
+            
+            # Check last activity (you might want to implement actual activity tracking)
+            last_active = self.user_last_active.get(user_id, member.joined_at)
+            
+            if last_active and last_active < fifteen_days_ago:
+                self.demotion_candidates[user_id] = last_active
+                
+                # Create demotion voting embed
+                embed = discord.Embed(
+                    title="⏰ Inactivity Alert - Verified Member",
+                    description=f"**Member:** {member.mention} ({member.display_name})\n"
+                              f"**User ID:** `{user_id}`\n"
+                              f"**Status:** Inactive for 15+ days\n"
+                              f"**Last Active:** {last_active.strftime('%Y-%m-%d %H:%M') if isinstance(last_active, datetime) else 'Unknown'}\n"
+                              f"**Current Role:** <@&{self.VERIFIED_ROLE_ID}>",
+                    color=discord.Color.purple(),
+                    timestamp=current_time
                 )
                 
-                await message.edit(embed=embed)
-                print(f"✅ Spared {member.display_name}")
+                # Send to admin channel for voting
+                view = DemotionVoteView(self.bot, user_id, "inactive_verified")
+                message = await admin_channel.send(embed=embed, view=view)
+    
+    @tasks.loop(hours=1)
+    async def check_active_demoted(self):
+        """Check if demoted users have become active"""
+        await self.bot.wait_until_ready()
+        
+        guild = self.bot.get_guild(self.bot.config.guild_id)
+        if not guild:
+            return
+        
+        greet_channel = guild.get_channel(self.GREET_CHANNEL_ID)
+        admin_channel = guild.get_channel(self.ADMIN_CHANNEL_ID)
+        
+        if not greet_channel or not admin_channel:
+            return
+        
+        inactive_role = guild.get_role(self.INACTIVE_ROLE_ID)
+        if not inactive_role:
+            return
+        
+        for member in inactive_role.members:
+            user_id = member.id
             
-            # Clear reactions to prevent further voting
+            # Check if user was recently active (within last hour)
+            # You should implement actual activity tracking here
+            # This is a placeholder - you need to track user activity properly
+            if self.is_user_active(member):  # Implement this method based on your activity tracking
+                if user_id in self.demoted_users and user_id not in self.under_review:
+                    # User came back online
+                    del self.demoted_users[user_id]
+                    
+                    # Send welcome message
+                    welcome_embed = discord.Embed(
+                        title="🎉 Welcome Back!",
+                        description=f"**Welcome back {member.mention}!**\n\n"
+                                  f"We've missed your presence in **Impèrius**! 🏰\n"
+                                  f"It's great to see you active again!",
+                        color=discord.Color.green(),
+                        timestamp=datetime.utcnow()
+                    )
+                    welcome_embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+                    
+                    await greet_channel.send(embed=welcome_embed)
+                    
+                    # Notify admins for review
+                    review_embed = discord.Embed(
+                        title="🔔 Previously Demoted User Active",
+                        description=f"**User:** {member.mention} ({member.display_name})\n"
+                                  f"**User ID:** `{user_id}`\n"
+                                  f"**Status:** Became active after demotion\n"
+                                  f"**Current Role:** <@&{self.INACTIVE_ROLE_ID}>\n\n"
+                                  f"Please review their status and take appropriate action.",
+                        color=discord.Color.blue()
+                    )
+                    
+                    view = DemotedUserActionView(self.bot, user_id, "returned_active")
+                    await admin_channel.send(embed=review_embed, view=view)
+    
+    def is_user_active(self, member: discord.Member) -> bool:
+        """
+        Check if user is active.
+        You need to implement proper activity tracking.
+        This could track: messages sent, voice activity, etc.
+        """
+        # Placeholder - implement your activity tracking logic here
+        # Return True if user was active recently (e.g., last 1 hour)
+        return False
+    
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """Track when users get roles updated"""
+        # Track when users get promoted/demoted
+        before_roles = {role.id for role in before.roles}
+        after_roles = {role.id for role in after.roles}
+        
+        # Check if user got verified role
+        if self.VERIFIED_ROLE_ID not in before_roles and self.VERIFIED_ROLE_ID in after_roles:
+            user_id = after.id
+            # Remove from any cleanup lists
+            self.ghost_users.pop(user_id, None)
+            self.demotion_candidates.pop(user_id, None)
+            self.under_review.pop(user_id, None)
+        
+        # Check if user got demoted to inactive role
+        if self.INACTIVE_ROLE_ID not in before_roles and self.INACTIVE_ROLE_ID in after_roles:
+            user_id = after.id
+            self.demoted_users[user_id] = datetime.utcnow()
+            
+            # Remove from other lists
+            self.demotion_candidates.pop(user_id, None)
+            self.under_review.pop(user_id, None)
+            
+            # Move to cleanup channel
+            guild = after.guild
+            cleanup_channel = guild.get_channel(self.CLEANUP_CHANNEL_ID)
+            
+            if cleanup_channel:
+                embed = discord.Embed(
+                    title="📥 User Demoted to Inactive",
+                    description=f"**User:** {after.mention} ({after.display_name})\n"
+                              f"**User ID:** `{user_id}`\n"
+                              f"**Status:** Demoted due to inactivity\n"
+                              f"**Demotion Date:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
+                    color=discord.Color.red(),
+                    timestamp=datetime.utcnow()
+                )
+                
+                view = DemotedUserActionView(self.bot, user_id, "demoted")
+                await cleanup_channel.send(embed=embed, view=view)
+    
+    async def handle_vote_action(self, action: str, target_user_id: int, voter: discord.Member, message_id: int):
+        """Handle vote actions from buttons"""
+        guild = self.bot.get_guild(self.bot.config.guild_id)
+        if not guild:
+            return
+        
+        target_user = guild.get_member(target_user_id)
+        if not target_user:
+            return
+        
+        admin_channel = guild.get_channel(self.ADMIN_CHANNEL_ID)
+        cleanup_channel = guild.get_channel(self.CLEANUP_CHANNEL_ID)
+        
+        if action == "kick_ghost":
+            # Kick ghost user
             try:
-                await message.clear_reactions()
+                await target_user.kick(reason=f"Ghost user cleanup - Voted by {voter.display_name}")
+                
+                # Send notification
+                notification = (
+                    f"👑 **{voter.display_name}** ordered user `{target_user_id}` to be kicked out of the server\n"
+                    f"❌ **Reason:** Failed to pass and become part of **Impèrius** after 7+ days with no roles."
+                )
+                
+                if cleanup_channel:
+                    await cleanup_channel.send(notification)
+                
+                # Clean up records
+                self.ghost_users.pop(target_user_id, None)
+                
             except discord.Forbidden:
-                print(f"⚠️ Cannot clear reactions on message {message.id}")
-            
-        except discord.Forbidden as e:
-            print(f"❌ Permission error processing demotion for {member.display_name}: {e}")
-        except Exception as e:
-            print(f"❌ Error processing demotion decision: {type(e).__name__}: {e}")
-    
-    # ==================== DATA MANAGEMENT ====================
-    
-    def save_all_data(self):
-        """Save all data files with proper error handling"""
-        try:
-            success1 = self.save_json('data/user_activity.json', self.user_activity)
-            success2 = self.save_json('data/demoted_users.json', self.demoted_users)
-            success3 = self.save_json('data/demotion_posts.json', self.demotion_posts)
-            
-            if success1 and success2 and success3:
-                print("💾 Cleanup system data saved successfully")
-            else:
-                print("⚠️ Some cleanup data files failed to save")
+                if admin_channel:
+                    await admin_channel.send(f"⚠️ Don't have permission to kick {target_user.mention}")
+        
+        elif action == "grant_role_ghost":
+            # Grant verified role to ghost user
+            verified_role = guild.get_role(self.VERIFIED_ROLE_ID)
+            if verified_role:
+                await target_user.add_roles(verified_role)
                 
-        except Exception as e:
-            print(f"❌ CleanupSystem error in save_all_data: {type(e).__name__}: {e}")
-    
-    async def cleanup_old_data(self):
-        """Clean up old demotion posts data"""
-        try:
-            week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-            
-            for member_id in list(self.demotion_posts.keys()):
-                # Remove posts older than 7 days
-                self.demotion_posts[member_id] = [
-                    post for post in self.demotion_posts[member_id]
-                    if isinstance(post.get('timestamp'), datetime) and post['timestamp'] > week_ago
-                ]
+                notification = (
+                    f"✨ **{voter.display_name}** has granted the **Impèrius** role to {target_user.mention}\n"
+                    f"🎉 Welcome to the verified members!"
+                )
                 
-                # Remove empty entries
-                if not self.demotion_posts[member_id]:
-                    del self.demotion_posts[member_id]
+                if cleanup_channel:
+                    await cleanup_channel.send(notification)
+                
+                self.ghost_users.pop(target_user_id, None)
+        
+        elif action == "demote_verified":
+            # Demote inactive verified user
+            verified_role = guild.get_role(self.VERIFIED_ROLE_ID)
+            inactive_role = guild.get_role(self.INACTIVE_ROLE_ID)
             
-            self.save_json('data/demotion_posts.json', self.demotion_posts)
-            print("🧹 Cleaned up old demotion posts data")
+            if verified_role and inactive_role:
+                await target_user.remove_roles(verified_role)
+                await target_user.add_roles(inactive_role)
+                
+                notification = (
+                    f"⬇️ **{voter.display_name}** has demoted {target_user.mention} to inactive status\n"
+                    f"📉 **Reason:** Inactivity for 15+ days"
+                )
+                
+                if admin_channel:
+                    await admin_channel.send(notification)
+                
+                self.demotion_candidates.pop(target_user_id, None)
+                self.demoted_users[target_user_id] = datetime.utcnow()
+        
+        elif action == "promote_demoted":
+            # Promote demoted user back to verified
+            verified_role = guild.get_role(self.VERIFIED_ROLE_ID)
+            inactive_role = guild.get_role(self.INACTIVE_ROLE_ID)
             
-        except Exception as e:
-            print(f"❌ Error cleaning old data: {type(e).__name__}: {e}")
+            if verified_role and inactive_role:
+                await target_user.remove_roles(inactive_role)
+                await target_user.add_roles(verified_role)
+                
+                notification = (
+                    f"⬆️ **{voter.display_name}** has promoted {target_user.mention} back to verified status!\n"
+                    f"🎊 Welcome back to **Impèrius**!"
+                )
+                
+                if cleanup_channel:
+                    await cleanup_channel.send(notification)
+                
+                self.demoted_users.pop(target_user_id, None)
+                self.under_review.pop(target_user_id, None)
+        
+        elif action == "kick_demoted":
+            # Kick demoted user
+            try:
+                await target_user.kick(reason=f"Demoted user cleanup - Voted by {voter.display_name}")
+                
+                notification = (
+                    f"👑 **{voter.display_name}** ordered user `{target_user_id}` to be kicked\n"
+                    f"🗑️ **Reason:** Demoted user removal after review"
+                )
+                
+                if cleanup_channel:
+                    await cleanup_channel.send(notification)
+                
+                self.demoted_users.pop(target_user_id, None)
+                self.under_review.pop(target_user_id, None)
+                
+            except discord.Forbidden:
+                if admin_channel:
+                    await admin_channel.send(f"⚠️ Don't have permission to kick {target_user.mention}")
+
+def setup(bot):
+    bot.add_cog(CleanupSystem(bot))
