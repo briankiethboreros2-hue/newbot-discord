@@ -3,47 +3,20 @@ from discord.ext import commands, tasks
 import asyncio
 from datetime import datetime, timedelta
 import logging
-# Add these imports at the top
-from discord import ui
-import discord
 
-# Then add these view classes with custom_id for persistence
-class TryoutVoteView(discord.ui.View):
-    def __init__(self, bot, member=None, answers=None):
-        super().__init__(timeout=None)
-        self.bot = bot
-        self.member = member
-        self.answers = answers
-        self.voted_admins = set()
-    
-    @discord.ui.button(label="✅ Tryout", style=discord.ButtonStyle.green, custom_id="persistent:tryout_yes")
-    async def tryout_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_vote(interaction, "tryout")
-    
-    @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.red, custom_id="persistent:tryout_no")
-    async def tryout_no(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_vote(interaction, "reject")
-    
-    # ... rest of the class ...
-
-class TryoutDecisionView(discord.ui.View):
-    def __init__(self, bot, member=None, answers=None):
-        super().__init__(timeout=None)
-        self.bot = bot
-        self.member = member
-        self.answers = answers
-        self.voted_admins = set()
-    
-    @discord.ui.button(label="✅ Pass", style=discord.ButtonStyle.green, custom_id="persistent:tryout_pass")
-    async def tryout_pass(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_decision(interaction, "passed")
-    
-    @discord.ui.button(label="❌ Fail", style=discord.ButtonStyle.red, custom_id="persistent:tryout_fail")
-    async def tryout_fail(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_decision(interaction, "failed")
-    
-    # ... rest of the class ...
 logger = logging.getLogger(__name__)
+
+def has_voting_role(member):
+    """Check if member has any of the voting roles"""
+    voting_roles = [
+        1389835747040694332,  # Cᥣᥲᥒ Mᥲstᥱr🌟
+        1437578521374363769,  # Queen❤️‍🔥
+        1438420490455613540,  # cute ✨
+        1437572916005834793,  # OG-Impèrius🐦‍🔥
+    ]
+    
+    member_role_ids = [role.id for role in member.roles]
+    return any(role_id in member_role_ids for role_id in voting_roles)
 
 class RecruitmentSystem:
     def __init__(self, bot, guild):
@@ -57,6 +30,10 @@ class RecruitmentSystem:
         # Store admin review messages: user_id -> message_id
         self.admin_review_messages = {}
         self.tryout_vote_messages = {}
+        
+        # Track completed interviews to prevent re-interviewing returnees
+        self.completed_interviews = set()
+        self.failed_interviews = set()
         
         # Interview questions
         self.RECRUIT_QUESTIONS = [
@@ -89,14 +66,35 @@ class RecruitmentSystem:
                 del self.active_interviews[user_id]
             if user_id in self.interview_timeouts:
                 del self.interview_timeouts[user_id]
+            self.failed_interviews.add(user_id)
+    
+    @cleanup_interviews.before_loop
+    async def before_cleanup_interviews(self):
+        """Wait until bot is ready"""
+        await self.bot.wait_until_ready()
     
     async def handle_new_member(self, member):
         """Handle new member joining"""
         try:
+            # Check if member is a returnee (already completed or failed interview)
+            if member.id in self.completed_interviews:
+                logger.info(f"⏭️ Skipping interview for returnee {member.name} (already completed)")
+                return
+                
+            if member.id in self.failed_interviews:
+                logger.info(f"⏭️ Skipping interview for returnee {member.name} (previously failed)")
+                # Clear from failed list so they can try again
+                self.failed_interviews.discard(member.id)
+            
+            # Check if member already has a role (shouldn't happen but safety check)
+            if len(member.roles) > 1:
+                logger.info(f"⏭️ Skipping interview for {member.name} (already has roles)")
+                return
+            
             # Get the recruit confirmation channel
-            channel = self.bot.get_channel(self.bot.RECRUIT_CONFIRM_CHANNEL)
+            channel = self.bot.get_channel(1437568595977834590)  # RECRUIT_CONFIRM_CHANNEL
             if not channel:
-                logger.error(f"Could not find recruit channel: {self.bot.RECRUIT_CONFIRM_CHANNEL}")
+                logger.error("Recruit confirmation channel not found!")
                 return
             
             # Send welcome message
@@ -109,7 +107,8 @@ class RecruitmentSystem:
             self.interview_timeouts[member.id] = {
                 'welcome_msg': welcome_msg.id,
                 'dm_instruction': dm_instruction.id,
-                'channel_id': channel.id
+                'channel_id': channel.id,
+                'member_name': member.name
             }
             
             # Start DM interview
@@ -142,7 +141,8 @@ class RecruitmentSystem:
                 'current_question': 0,
                 'start_time': datetime.now(),
                 'member': member,
-                'dm_channel': dm_channel
+                'dm_channel': dm_channel,
+                'member_name': member.name
             }
             
             # Ask first question
@@ -193,6 +193,7 @@ class RecruitmentSystem:
             if user_id in self.active_interviews:
                 del self.active_interviews[user_id]
             await self.cleanup_channel_messages(user_id)
+            self.failed_interviews.add(user_id)
             return
         
         interview = self.active_interviews[user_id]
@@ -231,6 +232,9 @@ class RecruitmentSystem:
         except:
             pass
         
+        # Mark as completed
+        self.completed_interviews.add(user_id)
+        
         # Send to admin channel for review
         await self.send_to_admin_review(member, interview['answers'])
         
@@ -240,9 +244,9 @@ class RecruitmentSystem:
     async def send_to_admin_review(self, member, answers):
         """Send interview results to admin channel"""
         try:
-            channel = self.bot.get_channel(self.bot.ADMIN_CHANNEL)
+            channel = self.bot.get_channel(1455138098437689387)  # ADMIN_CHANNEL
             if not channel:
-                logger.error(f"Admin channel not found: {self.bot.ADMIN_CHANNEL}")
+                logger.error("Admin channel not found!")
                 return
             
             embed = discord.Embed(
@@ -268,7 +272,7 @@ class RecruitmentSystem:
     async def notify_interview_timeout(self, user_id, interview_data):
         """Notify admins when interview times out"""
         try:
-            channel = self.bot.get_channel(self.bot.ADMIN_CHANNEL)
+            channel = self.bot.get_channel(1455138098437689387)  # ADMIN_CHANNEL
             if not channel:
                 return
             
@@ -294,7 +298,7 @@ class RecruitmentSystem:
     async def notify_dm_blocked(self, member):
         """Notify when user has DMs blocked"""
         try:
-            channel = self.bot.get_channel(self.bot.ADMIN_CHANNEL)
+            channel = self.bot.get_channel(1455138098437689387)  # ADMIN_CHANNEL
             if not channel:
                 return
             
@@ -306,6 +310,9 @@ class RecruitmentSystem:
             )
             
             await channel.send(embed=embed)
+            
+            # Clean up channel messages
+            await self.cleanup_channel_messages(member.id)
             
         except Exception as e:
             logger.error(f"Error notifying DM blocked: {e}")
@@ -325,38 +332,51 @@ class RecruitmentSystem:
             try:
                 message = await channel.fetch_message(data['dm_instruction'])
                 await message.delete()
-            except:
-                pass
+                logger.info(f"🗑️ Deleted DM instruction for {data.get('member_name', 'unknown')}")
+            except discord.NotFound:
+                logger.warning(f"DM instruction message not found for user {user_id}")
+            except discord.Forbidden:
+                logger.error(f"No permission to delete message for user {user_id}")
+            except Exception as e:
+                logger.error(f"Error deleting message: {e}")
             
-            del self.interview_timeouts[user_id]
+            # Clean up data
+            if user_id in self.interview_timeouts:
+                del self.interview_timeouts[user_id]
             
         except Exception as e:
             logger.error(f"Error cleaning up messages: {e}")
 
 class TryoutVoteView(discord.ui.View):
     """View for admin tryout voting"""
-    def __init__(self, bot, member, answers):
-        super().__init__(timeout=None)  # No timeout
+    def __init__(self, bot, member=None, answers=None):
+        super().__init__(timeout=None)
         self.bot = bot
         self.member = member
         self.answers = answers
         self.voted_admins = set()
     
-    @discord.ui.button(label="✅ Tryout", style=discord.ButtonStyle.green, custom_id="tryout_yes")
+    @discord.ui.button(label="✅ Tryout", style=discord.ButtonStyle.green, custom_id="persistent:tryout_yes")
     async def tryout_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Admin votes for tryout"""
         await self.handle_vote(interaction, "tryout")
     
-    @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.red, custom_id="tryout_no")
+    @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.red, custom_id="persistent:tryout_no")
     async def tryout_no(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Admin votes to reject"""
         await self.handle_vote(interaction, "reject")
     
     async def handle_vote(self, interaction, vote_type):
         """Handle admin vote"""
+        # Check if user has voting role
+        if not has_voting_role(interaction.user):
+            await interaction.response.send_message(
+                "❌ You need to be Cᥣᥲᥒ Mᥲstᥱr🌟, Queen❤️‍🔥, cute ✨, or OG-Impèrius🐦‍🔥 to vote!",
+                ephemeral=True
+            )
+            return
+        
         # Check if admin has already voted
         if interaction.user.id in self.voted_admins:
-            await interaction.response.send_message("You've already voted!", ephemeral=True)
+            await interaction.response.send_message("⚠️ You've already voted!", ephemeral=True)
             return
         
         self.voted_admins.add(interaction.user.id)
@@ -365,7 +385,7 @@ class TryoutVoteView(discord.ui.View):
         admin_name = interaction.user.display_name
         
         # Send notification in admin channel
-        channel = self.bot.get_channel(self.bot.ADMIN_CHANNEL)
+        channel = self.bot.get_channel(1455138098437689387)  # ADMIN_CHANNEL
         if channel:
             if vote_type == "tryout":
                 message = f"👑 **{admin_name}** ordered the tryout for :military_helmet: {self.member.mention}"
@@ -377,13 +397,14 @@ class TryoutVoteView(discord.ui.View):
             
             await channel.send(message)
         
-        await interaction.response.send_message(f"Vote recorded: {vote_type}", ephemeral=True)
+        await interaction.response.send_message(f"✅ Vote recorded: {vote_type}", ephemeral=True)
     
     async def send_to_review_channel(self):
         """Send to review channel for tryout decision"""
         try:
-            channel = self.bot.get_channel(self.bot.REVIEW_CHANNEL)
+            channel = self.bot.get_channel(1454802873300025396)  # REVIEW_CHANNEL
             if not channel:
+                logger.error("Review channel not found!")
                 return
             
             embed = discord.Embed(
@@ -402,27 +423,33 @@ class TryoutVoteView(discord.ui.View):
 
 class TryoutDecisionView(discord.ui.View):
     """View for tryout pass/fail decision"""
-    def __init__(self, bot, member, answers):
+    def __init__(self, bot, member=None, answers=None):
         super().__init__(timeout=None)
         self.bot = bot
         self.member = member
         self.answers = answers
         self.voted_admins = set()
     
-    @discord.ui.button(label="✅ Pass", style=discord.ButtonStyle.green, custom_id="tryout_pass")
+    @discord.ui.button(label="✅ Pass", style=discord.ButtonStyle.green, custom_id="persistent:tryout_pass")
     async def tryout_pass(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Admin votes to pass recruit"""
         await self.handle_decision(interaction, "passed")
     
-    @discord.ui.button(label="❌ Fail", style=discord.ButtonStyle.red, custom_id="tryout_fail")
+    @discord.ui.button(label="❌ Fail", style=discord.ButtonStyle.red, custom_id="persistent:tryout_fail")
     async def tryout_fail(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Admin votes to fail recruit"""
         await self.handle_decision(interaction, "failed")
     
     async def handle_decision(self, interaction, decision):
         """Handle tryout decision"""
+        # Check if user has voting role
+        if not has_voting_role(interaction.user):
+            await interaction.response.send_message(
+                "❌ You need to be Cᥣᥲᥒ Mᥲstᥱr🌟, Queen❤️‍🔥, cute ✨, or OG-Impèrius🐦‍🔥 to vote!",
+                ephemeral=True
+            )
+            return
+        
         if interaction.user.id in self.voted_admins:
-            await interaction.response.send_message("You've already voted!", ephemeral=True)
+            await interaction.response.send_message("⚠️ You've already voted!", ephemeral=True)
             return
         
         self.voted_admins.add(interaction.user.id)
@@ -430,7 +457,7 @@ class TryoutDecisionView(discord.ui.View):
         admin_name = interaction.user.display_name
         
         # Send decision to admin channel
-        admin_channel = self.bot.get_channel(self.bot.ADMIN_CHANNEL)
+        admin_channel = self.bot.get_channel(1455138098437689387)  # ADMIN_CHANNEL
         if admin_channel:
             await admin_channel.send(f"👑 **{admin_name}** {decision} recruit :military_helmet: {self.member.mention}")
         
@@ -438,18 +465,21 @@ class TryoutDecisionView(discord.ui.View):
             # Give role and announce in tryout result channel
             await self.handle_passed_recruit(admin_name)
         
-        await interaction.response.send_message(f"Vote recorded: {decision}", ephemeral=True)
+        await interaction.response.send_message(f"✅ Vote recorded: {decision}", ephemeral=True)
     
     async def handle_passed_recruit(self, admin_name):
         """Handle passed recruit"""
         try:
             # Give Impèrius🔥 role
-            role = self.member.guild.get_role(self.bot.IMPERIUS_ROLE)
-            if role:
+            role = self.member.guild.get_role(1437570031822176408)  # IMPERIUS_ROLE
+            if role and role not in self.member.roles:
                 await self.member.add_roles(role)
+                logger.info(f"🎉 Gave Impèrius🔥 role to {self.member.name}")
+            elif role in self.member.roles:
+                logger.info(f"ℹ️ {self.member.name} already has Impèrius🔥 role")
             
             # Announce in tryout result channel
-            channel = self.bot.get_channel(self.bot.TRYOUT_RESULT_CHANNEL)
+            channel = self.bot.get_channel(1455205385463009310)  # TRYOUT_RESULT_CHANNEL
             if channel:
                 embed = discord.Embed(
                     title="🎉 New Member Joins Impèrius!",
@@ -459,7 +489,10 @@ class TryoutDecisionView(discord.ui.View):
                     color=discord.Color.green(),
                     timestamp=datetime.now()
                 )
+                embed.set_thumbnail(url=self.member.display_avatar.url)
                 await channel.send(embed=embed)
             
+        except discord.Forbidden:
+            logger.error(f"❌ No permission to add role to {self.member.name}")
         except Exception as e:
             logger.error(f"Error handling passed recruit: {e}")
