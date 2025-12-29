@@ -165,9 +165,9 @@ class ImperialBot(commands.Bot):
             logger.info(f'🏰 Main guild: {self.main_guild.name} (ID: {self.main_guild.id})')
             
             # Initialize systems with the guild
-            self.recruitment = RecruitmentSystem(self, self.main_guild, self.state)
-            self.online_announce = OnlineAnnounceSystem(self, self.main_guild, self.state)
-            self.cleanup = CleanupSystem(self, self.main_guild, self.state)
+            self.recruitment = RecruitmentSystem(self, self.main_guild)
+            self.online_announce = OnlineAnnounceSystem(self, self.main_guild)
+            self.cleanup = CleanupSystem(self, self.main_guild)
             
             # Start cleanup task
             if hasattr(self.cleanup, 'start_cleanup_task'):
