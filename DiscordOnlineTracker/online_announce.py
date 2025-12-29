@@ -10,6 +10,7 @@ class OnlineAnnounceSystem:
         self.bot = bot
         self.guild = guild
         self.last_online = {}  # Store last online announcements to prevent spam
+        self.tracked_members = set()  # Track members we've seen online
     
     async def check_online_status(self, before, after):
         """Check if member came online"""
@@ -21,8 +22,34 @@ class OnlineAnnounceSystem:
         if after.bot:
             return
         
-        # Check if status changed to online (from offline)
-        if before.status == discord.Status.offline and after.status != discord.Status.offline:
+        # Get member's current roles
+        member_roles = [role.id for role in after.roles]
+        
+        # Check if member has any of the tracked roles
+        tracked_roles = [
+            1437570031822176408,  # Impèrius🔥
+            1437572916005834793,  # OG-Impèrius🐦‍🔥
+            1389835747040694332,  # Cᥣᥲᥒ Mᥲstᥱr🌟
+            1437578521374363769,  # Queen❤️‍🔥
+            1438420490455613540   # cute ✨
+        ]
+        
+        # Check if member has any tracked role
+        has_tracked_role = any(role_id in member_roles for role_id in tracked_roles)
+        
+        # Only announce if member has a tracked role
+        if not has_tracked_role:
+            return
+        
+        # Check if status changed from offline to online (not idle/dnd)
+        # Only announce when explicitly coming online from offline
+        if (before.status == discord.Status.offline and 
+            after.status == discord.Status.online):
+            await self.announce_online(after)
+        
+        # Also announce when changing from dnd/idle to online
+        elif ((before.status == discord.Status.dnd or before.status == discord.Status.idle) and 
+              after.status == discord.Status.online):
             await self.announce_online(after)
     
     async def announce_online(self, member):
@@ -41,9 +68,9 @@ class OnlineAnnounceSystem:
             self.last_online[user_id] = current_time
             
             # Get attendance channel
-            channel = self.bot.get_channel(self.bot.ATTENDANCE_CHANNEL)
+            channel = self.bot.get_channel(1437768842871832597)  # ATTENDANCE_CHANNEL
             if not channel:
-                logger.error(f"Attendance channel not found: {self.bot.ATTENDANCE_CHANNEL}")
+                logger.error(f"Attendance channel not found!")
                 return
             
             # Get member's highest role for announcement
@@ -64,6 +91,7 @@ class OnlineAnnounceSystem:
                 embed.set_footer(text="Online Status")
                 
                 await channel.send(embed=embed)
+                logger.info(f"Announced {member.name} as online")
                 
         except Exception as e:
             logger.error(f"Error announcing online status: {e}")
@@ -73,22 +101,22 @@ class OnlineAnnounceSystem:
         member_name = member.display_name
         
         # Check roles in order of importance
-        if self.bot.CUTE_ROLE in [role.id for role in member.roles]:
+        if 1438420490455613540 in [role.id for role in member.roles]:  # cute ✨
             return f"Most cute ✨ **{member_name}** went online! 💫"
         
-        elif self.bot.QUEEN_ROLE in [role.id for role in member.roles]:
+        elif 1437578521374363769 in [role.id for role in member.roles]:  # Queen❤️‍🔥
             return f"The Queen❤️‍🔥 **{member_name}** is online! 👑"
         
-        elif self.bot.CLAN_MASTER_ROLE in [role.id for role in member.roles]:
+        elif 1389835747040694332 in [role.id for role in member.roles]:  # Cᥣᥲᥒ Mᥲstᥱr🌟
             return f"The Cᥣᥲᥒ Mᥲstᥱr🌟 **{member_name}** is online! ⭐"
         
-        elif self.bot.OG_ROLE in [role.id for role in member.roles]:
+        elif 1437572916005834793 in [role.id for role in member.roles]:  # OG-Impèrius🐦‍🔥
             return f"OG-Impèrius🐦‍🔥 **{member_name}** is online! 🔥"
         
-        elif self.bot.IMPERIUS_ROLE in [role.id for role in member.roles]:
+        elif 1437570031822176408 in [role.id for role in member.roles]:  # Impèrius🔥
             return f"Impèrius🔥 **{member_name}** is online! 🛡️"
         
-        # Check if member has any role (not a recruit)
+        # Check if member has any other role (not a recruit)
         elif len(member.roles) > 1:  # More than just @everyone
             return f"Member **{member_name}** is online! 👋"
         
