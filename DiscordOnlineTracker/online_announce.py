@@ -6,10 +6,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 class OnlineAnnounceSystem:
-    def __init__(self, bot, guild):  # REMOVE state parameter
+    def __init__(self, bot, guild, state):
         self.bot = bot
         self.guild = guild
-        self.last_online = {}  # Store locally
+        self.state = state
     
     async def check_online_status(self, before, after):
         """Check if member came online"""
@@ -41,7 +41,6 @@ class OnlineAnnounceSystem:
             return
         
         # Check if status changed from offline to online (not idle/dnd)
-        # Only announce when explicitly coming online from offline
         if (before.status == discord.Status.offline and 
             after.status == discord.Status.online):
             await self.announce_online(after)
@@ -54,22 +53,22 @@ class OnlineAnnounceSystem:
     async def announce_online(self, member):
         """Announce member going online"""
         try:
-            # Prevent spam (only announce once every 30 minutes per user)
+            # Prevent spam using state manager
             user_id = member.id
             current_time = datetime.now()
             
-            if user_id in self.last_online:
-                last_time = self.last_online[user_id]
+            last_time = self.state.last_online.get(user_id)
+            if last_time:
                 time_diff = (current_time - last_time).total_seconds()
                 if time_diff < 1800:  # 30 minutes
                     return
             
-            self.last_online[user_id] = current_time
+            self.state.last_online[user_id] = current_time
             
             # Get attendance channel
             channel = self.bot.get_channel(1437768842871832597)  # ATTENDANCE_CHANNEL
             if not channel:
-                logger.error("Attendance channel not found!")
+                logger.error(f"Attendance channel not found!")
                 return
             
             # Get member's highest role for announcement
