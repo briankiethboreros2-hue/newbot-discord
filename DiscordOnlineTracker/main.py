@@ -115,7 +115,12 @@ class ImperialBot(commands.Bot):
         
         logger.info("✅ Bot is fully operational!")
 
-    # ======== COMMANDS ========
+    # ======== DIRECT COMMANDS ========
+    
+    @commands.command(name='test')
+    async def test_command(self, ctx):
+        """Test if commands work"""
+        await ctx.send("✅ Test command works! Commands are functional.")
     
     @commands.command(name='status')
     async def status_command(self, ctx):
@@ -278,7 +283,8 @@ class ImperialBot(commands.Bot):
         # Public commands
         public_cmds = [
             ("`!status`", "Check bot status"),
-            ("`!help`", "Show this help message")
+            ("`!help`", "Show this help message"),
+            ("`!test`", "Test if commands work")
         ]
         
         embed.add_field(
@@ -296,12 +302,6 @@ class ImperialBot(commands.Bot):
         embed.set_footer(text="Bot automatically handles interviews, online tracking, and cleanup")
         
         await ctx.send(embed=embed)
-
-    # ======== COG REGISTRATION ========
-    
-    async def load_cogs(self):
-        """Load command cogs - but we're using commands directly in the class"""
-        pass  # Commands are defined as methods in this class
 
     async def verify_resources(self):
         """Verify that all channels and roles exist"""
