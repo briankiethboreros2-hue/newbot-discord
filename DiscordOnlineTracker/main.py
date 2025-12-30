@@ -1,9 +1,8 @@
 import os
 import discord
-from discord.ext import commands, tasks
-import asyncio
+from discord.ext import commands
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 import traceback
 import sys
 import time
@@ -53,7 +52,16 @@ class ImperialBot(commands.Bot):
         self.cleanup_system = None
         self.main_guild = None
         self.bot_start_time = datetime.now()
-
+        
+        # Add commands directly
+        self.add_command(self.test_command)
+        self.add_command(self.status_command)
+        self.add_command(self.manual_cleanup)
+        self.add_command(self.reset_member_check)
+        self.add_command(self.force_interview)
+        self.add_command(self.check_member_status)
+        self.add_command(self.help_command)
+    
     async def setup_hook(self):
         """Setup hook - runs before on_ready"""
         logger.info("🔧 Running setup_hook...")
@@ -115,12 +123,13 @@ class ImperialBot(commands.Bot):
         
         logger.info("✅ Bot is fully operational!")
 
-    # ======== DIRECT COMMANDS ========
+    # ======== COMMAND DEFINITIONS ========
     
     @commands.command(name='test')
     async def test_command(self, ctx):
         """Test if commands work"""
         await ctx.send("✅ Test command works! Commands are functional.")
+        logger.info(f"Test command executed by {ctx.author.name}")
     
     @commands.command(name='status')
     async def status_command(self, ctx):
@@ -147,6 +156,7 @@ class ImperialBot(commands.Bot):
         embed.add_field(name="🔧 Systems", value="\n".join(systems) if systems else "❌ None", inline=False)
         
         await ctx.send(embed=embed)
+        logger.info(f"Status command executed by {ctx.author.name}")
     
     @commands.command(name='cleanup')
     @commands.has_permissions(administrator=True)
@@ -170,6 +180,8 @@ class ImperialBot(commands.Bot):
                 logger.error(f"Manual cleanup error: {e}")
         else:
             await ctx.send("❌ Cleanup system not initialized")
+        
+        logger.info(f"Cleanup command executed by {ctx.author.name}")
     
     @commands.command(name='resetcheck')
     @commands.has_permissions(administrator=True)
@@ -186,7 +198,7 @@ class ImperialBot(commands.Bot):
         if hasattr(self.cleanup_system, 'member_last_check'):
             self.cleanup_system.member_last_check[member.id] = datetime.now()
             await ctx.send(f"✅ Reset check date for {member.mention} to today")
-            logger.info(f"Admin reset check for {member.name}")
+            logger.info(f"Admin reset check for {member.name} by {ctx.author.name}")
         else:
             await ctx.send("❌ Check tracking not available")
     
@@ -210,6 +222,8 @@ class ImperialBot(commands.Bot):
             await ctx.send(f"❌ Cannot DM {member.mention}. They may have DMs disabled.")
         except Exception as e:
             await ctx.send(f"❌ Error: {e}")
+        
+        logger.info(f"Interview command executed by {ctx.author.name} for {member.name}")
     
     @commands.command(name='checkmember')
     @commands.has_permissions(administrator=True)
@@ -262,6 +276,7 @@ class ImperialBot(commands.Bot):
         embed.add_field(name="📱 Status", value=str(member.status).title(), inline=True)
         
         await ctx.send(embed=embed)
+        logger.info(f"Checkmember command executed by {ctx.author.name} for {member.name}")
     
     @commands.command(name='help')
     async def help_command(self, ctx):
@@ -302,6 +317,7 @@ class ImperialBot(commands.Bot):
         embed.set_footer(text="Bot automatically handles interviews, online tracking, and cleanup")
         
         await ctx.send(embed=embed)
+        logger.info(f"Help command executed by {ctx.author.name}")
 
     async def verify_resources(self):
         """Verify that all channels and roles exist"""
