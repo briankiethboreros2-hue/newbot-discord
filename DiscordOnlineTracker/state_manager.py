@@ -18,9 +18,9 @@ class StateManager:
             'completed_interviews': [],   # List of completed interview user_ids
             'failed_interviews': [],      # List of failed interview user_ids
             'interview_timeouts': {},     # {user_id: timeout_data}
-            'recent_joins': {},           # {user_id: join_time}
+            'recent_joins': {},           # {user_id: join_time} - IN-MEMORY ONLY
             'online_tracking': {},        # {user_id: tracking_data}
-            'cleanup_check_dates': {},    # {user_id: last_check_date} - NEW
+            'cleanup_check_dates': {},    # {user_id: last_check_date}
             'last_save': None
         }
         
@@ -38,7 +38,9 @@ class StateManager:
                         # Merge loaded state with default structure
                         for key in self.state:
                             if key in loaded_state:
-                                self.state[key] = loaded_state[key]
+                                # Skip recent_joins - keep in memory only
+                                if key != 'recent_joins':
+                                    self.state[key] = loaded_state[key]
                         
                         logger.info(f"✅ Loaded state from {self.data_file}")
             else:
@@ -48,10 +50,11 @@ class StateManager:
             # Keep default state on error
     
     def save_state(self):
-        """Save state to file - NON-BLOCKING VERSION"""
+        """Save state to file - WITHOUT recent_joins"""
         try:
-            # Create a copy of state to avoid modifying during save
+            # Create a copy of state WITHOUT recent_joins
             state_copy = self.state.copy()
+            state_copy.pop('recent_joins', None)  # Remove recent_joins - don't save to file
             state_copy['last_save'] = datetime.now().isoformat()
             
             # Try to acquire lock with timeout to prevent deadlock
@@ -80,10 +83,35 @@ class StateManager:
     
     @auto_save_task.before_loop
     async def before_auto_save(self):
-        """Wait until bot is ready"""
-        # This depends on your bot setup - you might need to import the bot
-        # or use a different method to wait
-        await asyncio.sleep(10)  # Wait 10 seconds before starting
+        """Wait 10 seconds before starting auto-save"""
+        await asyncio.sleep(10)
+    
+    def cleanup_recent_joins_on_demand(self):
+        """Clean recent joins without saving state - call this when checking"""
+        try:
+            now = datetime.now()
+            cleaned = 0
+            
+            if 'recent_joins' in self.state:
+                user_ids_to_remove = []
+                for user_id_str, join_time_str in list(self.state['recent_joins'].items()):
+                    try:
+                        join_time = datetime.fromisoformat(join_time_str)
+                        if (now - join_time).total_seconds() > 300:  # 5 minutes
+                            user_ids_to_remove.append(user_id_str)
+                            cleaned += 1
+                    except:
+                        user_ids_to_remove.append(user_id_str)
+                
+                for user_id_str in user_ids_to_remove:
+                    del self.state['recent_joins'][user_id_str]
+            
+            if cleaned > 0:
+                logger.debug(f"🧹 Cleaned {cleaned} stale recent joins")
+            return cleaned
+        except Exception as e:
+            logger.error(f"Error in cleanup_recent_joins_on_demand: {e}")
+            return 0
     
     # ======== INTERVIEW MANAGEMENT ========
     
@@ -140,69 +168,6 @@ class StateManager:
             except:
                 return None
         return None
-    
-    def cleanup_stale_data(self):
-        """Clean up stale data - NON-BLOCKING VERSION"""
-        try:
-            now = datetime.now()
-            cleaned = 0
-            
-            # Clean recent joins older than 5 minutes
-            user_ids_to_remove = []
-            for user_id_str, join_time_str in self.state['recent_joins'].items():
-                try:
-                    join_time = datetime.fromisoformat(join_time_str)
-                    if (now - join_time).total_seconds() > 300:  # 5 minutes
-                        user_ids_to_remove.append(user_id_str)
-                        cleaned += 1
-                except:
-                    user_ids_to_remove.append(user_id_str)
-            
-            for user_id_str in user_ids_to_remove:
-                del self.state['recent_joins'][user_id_str]
-            
-            # Clean completed interviews older than 7 days
-            if 'completed_interviews_timestamps' not in self.state:
-                self.state['completed_interviews_timestamps'] = {}
-            
-            # Clean failed interviews older than 7 days
-            if 'failed_interviews_timestamps' not in self.state:
-                self.state['failed_interviews_timestamps'] = {}
-            
-            logger.debug(f"🧹 Cleaned {cleaned} stale entries")
-            
-            # Save state WITHOUT potentially blocking operations
-            self.save_state_async()
-            
-        except Exception as e:
-            logger.error(f"❌ Error in cleanup_stale_data: {e}")
-    
-    def save_state_async(self):
-        """Save state asynchronously to avoid blocking"""
-        # Use threading to save in background
-        thread = threading.Thread(target=self._save_in_background, daemon=True)
-        thread.start()
-    
-    def _save_in_background(self):
-        """Save state in background thread"""
-        try:
-            # Create a copy of state to avoid modifying during save
-            state_copy = self.state.copy()
-            state_copy['last_save'] = datetime.now().isoformat()
-            
-            if self.lock.acquire(timeout=2.0):  # 2 second timeout
-                try:
-                    with open(self.data_file, 'w') as f:
-                        json.dump(state_copy, f, indent=2, default=str)
-                    logger.debug(f"💾 Background saved state to {self.data_file}")
-                except Exception as e:
-                    logger.error(f"❌ Error in background save: {e}")
-                finally:
-                    self.lock.release()
-            else:
-                logger.warning("⏰ Could not acquire lock for background save")
-        except Exception as e:
-            logger.error(f"❌ Error in background save thread: {e}")
     
     # ======== ONLINE TRACKING ========
     
