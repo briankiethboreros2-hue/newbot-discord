@@ -5,31 +5,17 @@ from datetime import datetime
 class BotCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.cleanup_system = None
-        self.recruitment = None
-        self.online_announce = None
-        self.main_guild = None
-        self.state = None
     
     async def cog_check(self, ctx):
-        """Check if cog is ready"""
-        # Get references from bot
-        if not self.cleanup_system:
-            self.cleanup_system = self.bot.cleanup_system
-        if not self.recruitment:
-            self.recruitment = self.bot.recruitment
-        if not self.online_announce:
-            self.online_announce = self.bot.online_announce
-        if not self.main_guild:
-            self.main_guild = self.bot.main_guild
-        if not self.state:
-            self.state = self.bot.state
+        """Check if cog is ready - get references from bot"""
+        # These will be set when bot is ready
         return True
     
     @commands.command(name='status')
     async def status_command(self, ctx):
         """Check bot status"""
-        uptime = datetime.now() - self.bot.bot_start_time
+        bot = self.bot
+        uptime = datetime.now() - bot.bot_start_time
         days = uptime.days
         hours = uptime.seconds // 3600
         minutes = (uptime.seconds // 60) % 60
@@ -39,14 +25,14 @@ class BotCommands(commands.Cog):
             color=discord.Color.blue()
         )
         embed.add_field(name="🏃 Uptime", value=f"{days}d {hours}h {minutes}m", inline=True)
-        embed.add_field(name="🏰 Guild", value=self.main_guild.name if self.main_guild else "None", inline=True)
-        embed.add_field(name="👤 Members", value=self.main_guild.member_count if self.main_guild else "0", inline=True)
+        embed.add_field(name="🏰 Guild", value=bot.main_guild.name if hasattr(bot, 'main_guild') and bot.main_guild else "None", inline=True)
+        embed.add_field(name="👤 Members", value=bot.main_guild.member_count if hasattr(bot, 'main_guild') and bot.main_guild else "0", inline=True)
         
         # System status
         systems = []
-        if self.recruitment: systems.append("✅ Recruitment")
-        if self.online_announce: systems.append("✅ Online Announce")
-        if self.cleanup_system: systems.append("✅ Cleanup")
+        if hasattr(bot, 'recruitment') and bot.recruitment: systems.append("✅ Recruitment")
+        if hasattr(bot, 'online_announce') and bot.online_announce: systems.append("✅ Online Announce")
+        if hasattr(bot, 'cleanup_system') and bot.cleanup_system: systems.append("✅ Cleanup")
         
         embed.add_field(name="🔧 Systems", value="\n".join(systems) if systems else "❌ None", inline=False)
         
@@ -56,17 +42,19 @@ class BotCommands(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def manual_cleanup(self, ctx):
         """Manually trigger cleanup system"""
+        bot = self.bot
+        
         await ctx.send("🚀 Running manual cleanup...")
         
-        if self.cleanup_system:
+        if hasattr(bot, 'cleanup_system') and bot.cleanup_system:
             try:
                 # Run ghost user check
                 await ctx.send("👻 Checking ghost users...")
-                await self.cleanup_system.check_ghost_users()
+                await bot.cleanup_system.check_ghost_users()
                 
                 # Run inactive member check
                 await ctx.send("😴 Checking inactive members...")
-                await self.cleanup_system.check_inactive_members_15day_cycle()
+                await bot.cleanup_system.check_inactive_members_15day_cycle()
                 
                 await ctx.send("✅ Cleanup completed!")
             except Exception as e:
@@ -78,16 +66,18 @@ class BotCommands(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def reset_member_check(self, ctx, member: discord.Member = None):
         """Reset a member's inactivity check date"""
+        bot = self.bot
+        
         if not member:
             await ctx.send("❌ Please mention a member: `!resetcheck @username`")
             return
         
-        if not self.cleanup_system:
+        if not hasattr(bot, 'cleanup_system') or not bot.cleanup_system:
             await ctx.send("❌ Cleanup system not initialized")
             return
         
-        if hasattr(self.cleanup_system, 'member_last_check'):
-            self.cleanup_system.member_last_check[member.id] = datetime.now()
+        if hasattr(bot.cleanup_system, 'member_last_check'):
+            bot.cleanup_system.member_last_check[member.id] = datetime.now()
             await ctx.send(f"✅ Reset check date for {member.mention} to today")
         else:
             await ctx.send("❌ Check tracking not available")
@@ -96,17 +86,19 @@ class BotCommands(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def force_interview(self, ctx, member: discord.Member = None):
         """Force start an interview for a member"""
+        bot = self.bot
+        
         if not member:
             await ctx.send("❌ Please mention a member: `!interview @username`")
             return
         
-        if not self.recruitment:
+        if not hasattr(bot, 'recruitment') or not bot.recruitment:
             await ctx.send("❌ Recruitment system not initialized")
             return
         
         await ctx.send(f"📝 Starting interview for {member.mention}...")
         try:
-            await self.recruitment.start_dm_interview(member)
+            await bot.recruitment.start_dm_interview(member)
             await ctx.send(f"✅ Interview started! Check DMs with {member.name}")
         except discord.Forbidden:
             await ctx.send(f"❌ Cannot DM {member.mention}. They may have DMs disabled.")
@@ -117,6 +109,8 @@ class BotCommands(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def check_member_status(self, ctx, member: discord.Member = None):
         """Check a member's status"""
+        bot = self.bot
+        
         if not member:
             await ctx.send("❌ Please mention a member: `!checkmember @username`")
             return
@@ -141,8 +135,8 @@ class BotCommands(commands.Cog):
         embed.add_field(name="👑 Roles", value=", ".join(role_names) if role_names else "No roles", inline=False)
         
         # Check if in cleanup tracking
-        if self.cleanup_system and hasattr(self.cleanup_system, 'member_last_check'):
-            last_check = self.cleanup_system.member_last_check.get(member.id)
+        if hasattr(bot, 'cleanup_system') and bot.cleanup_system and hasattr(bot.cleanup_system, 'member_last_check'):
+            last_check = bot.cleanup_system.member_last_check.get(member.id)
             if last_check:
                 days_ago = (datetime.now() - last_check).days
                 embed.add_field(name="📅 Last Check", value=f"{last_check.strftime('%Y-%m-%d')} ({days_ago} days ago)", inline=True)
@@ -203,6 +197,12 @@ class BotCommands(commands.Cog):
         embed.set_footer(text="Bot automatically handles interviews, online tracking, and cleanup")
         
         await ctx.send(embed=embed)
+    
+    @commands.command(name='test')
+    async def test_command(self, ctx):
+        """Test command to verify bot is working"""
+        await ctx.send("✅ Bot commands are working!")
 
 async def setup(bot):
+    """Setup function for the cog"""
     await bot.add_cog(BotCommands(bot))
