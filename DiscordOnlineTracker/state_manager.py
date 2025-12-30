@@ -1,9 +1,6 @@
-"""
-state_manager.py - Simple state management for bot
-"""
 import json
-import threading
 import asyncio
+import threading
 from datetime import datetime, timedelta
 import os
 import logging
@@ -11,208 +8,251 @@ import logging
 logger = logging.getLogger(__name__)
 
 class StateManager:
-    def __init__(self, persistence_file="bot_state.json"):
-        self.persistence_file = persistence_file
+    def __init__(self, data_file="state_data.json"):
+        self.data_file = data_file
         self.lock = threading.Lock()
         
-        # Initialize all state dictionaries
-        self.active_interviews = {}
-        self.interview_timeouts = {}
-        self.checked_users = set()
-        self.last_online = {}
-        self.recent_joins = {}
-        self.demoted_users = {}
-        self.completed_interviews = set()
-        self.failed_interviews = set()
+        # Initialize state data
+        self.state = {
+            'active_interviews': {},      # {user_id: interview_data}
+            'completed_interviews': [],   # List of completed interview user_ids
+            'failed_interviews': [],      # List of failed interview user_ids
+            'interview_timeouts': {},     # {user_id: timeout_data}
+            'recent_joins': {},           # {user_id: join_time}
+            'online_tracking': {},        # {user_id: tracking_data}
+            'cleanup_check_dates': {},    # {user_id: last_check_date} - NEW
+            'last_save': None
+        }
         
         # Load existing state
         self.load_state()
-        
-        # Start auto-save
-        self.auto_save_task = None
-    
-    def start_auto_save(self):
-        """Start auto-saving state periodically"""
-        async def auto_save():
-            while True:
-                await asyncio.sleep(300)  # Save every 5 minutes
-                self.save_state()
-                logger.debug("💾 Auto-saved state")
-        
-        self.auto_save_task = asyncio.create_task(auto_save())
-        logger.info("✅ Started state auto-save")
-    
-    def stop_auto_save(self):
-        """Stop auto-saving"""
-        if self.auto_save_task:
-            self.auto_save_task.cancel()
-        self.save_state()  # Final save
-        logger.info("🛑 Stopped state auto-save")
     
     def load_state(self):
-        """Load state from JSON file"""
+        """Load state from file"""
         try:
-            if os.path.exists(self.persistence_file):
-                with open(self.persistence_file, 'r') as f:
-                    data = json.load(f)
-                
-                # Load all state data
-                self.active_interviews = {int(k): v for k, v in data.get('active_interviews', {}).items()}
-                self.interview_timeouts = {int(k): v for k, v in data.get('interview_timeouts', {}).items()}
-                self.checked_users = set(data.get('checked_users', []))
-                self.completed_interviews = set(data.get('completed_interviews', []))
-                self.failed_interviews = set(data.get('failed_interviews', []))
-                
-                # Load timestamp dictionaries
-                self.last_online = self._load_timestamps(data.get('last_online', {}))
-                self.recent_joins = self._load_timestamps(data.get('recent_joins', {}))
-                self.demoted_users = self._load_timestamps(data.get('demoted_users', {}))
-                
-                logger.info(f"✅ Loaded state from {self.persistence_file}")
-                
+            if os.path.exists(self.data_file):
+                with self.lock:
+                    with open(self.data_file, 'r') as f:
+                        loaded_state = json.load(f)
+                        
+                        # Merge loaded state with default structure
+                        for key in self.state:
+                            if key in loaded_state:
+                                self.state[key] = loaded_state[key]
+                        
+                        logger.info(f"✅ Loaded state from {self.data_file}")
+            else:
+                logger.info(f"📁 No state file found, starting fresh")
         except Exception as e:
             logger.error(f"❌ Error loading state: {e}")
-    
-    def _load_timestamps(self, data_dict):
-        """Convert ISO timestamp strings back to datetime objects"""
-        result = {}
-        for key, value in data_dict.items():
-            try:
-                result[int(key)] = datetime.fromisoformat(value)
-            except:
-                result[int(key)] = value
-        return result
-    
-    def _save_timestamps(self, data_dict):
-        """Convert datetime objects to ISO timestamp strings"""
-        result = {}
-        for key, value in data_dict.items():
-            if isinstance(value, datetime):
-                result[str(key)] = value.isoformat()
-            else:
-                result[str(key)] = value
-        return result
+            # Keep default state on error
     
     def save_state(self):
-        """Save state to JSON file"""
+        """Save state to file - NON-BLOCKING VERSION"""
         try:
-            with self.lock:
-                data = {
-                    'active_interviews': self.active_interviews,
-                    'interview_timeouts': self.interview_timeouts,
-                    'checked_users': list(self.checked_users),
-                    'completed_interviews': list(self.completed_interviews),
-                    'failed_interviews': list(self.failed_interviews),
-                    'last_online': self._save_timestamps(self.last_online),
-                    'recent_joins': self._save_timestamps(self.recent_joins),
-                    'demoted_users': self._save_timestamps(self.demoted_users),
-                    'saved_at': datetime.now().isoformat()
-                }
-                
-                with open(self.persistence_file, 'w') as f:
-                    json.dump(data, f, indent=2, default=str)
-                
-                logger.debug(f"💾 State saved to {self.persistence_file}")
-                
+            # Create a copy of state to avoid modifying during save
+            state_copy = self.state.copy()
+            state_copy['last_save'] = datetime.now().isoformat()
+            
+            # Try to acquire lock with timeout to prevent deadlock
+            if self.lock.acquire(timeout=1.0):  # 1 second timeout
+                try:
+                    with open(self.data_file, 'w') as f:
+                        json.dump(state_copy, f, indent=2, default=str)
+                    logger.debug(f"💾 Saved state to {self.data_file}")
+                except Exception as e:
+                    logger.error(f"❌ Error saving state: {e}")
+                finally:
+                    self.lock.release()
+            else:
+                logger.warning("⏰ Could not acquire lock for save_state - skipping save")
         except Exception as e:
-            logger.error(f"❌ Error saving state: {e}")
+            logger.error(f"❌ Error in save_state: {e}")
     
-    def cleanup_stale_data(self):
-        """Clean up old data to prevent memory leaks"""
-        with self.lock:
-            now = datetime.now()
-            cleaned_count = 0
-            
-            # Clean active_interviews older than 1 hour
-            stale_keys = []
-            for key, interview in self.active_interviews.items():
-                if 'start_time' in interview:
-                    start_time = interview['start_time']
-                    if isinstance(start_time, str):
-                        try:
-                            start_time = datetime.fromisoformat(start_time)
-                        except:
-                            stale_keys.append(key)
-                            continue
-                    
-                    if (now - start_time) > timedelta(hours=1):
-                        stale_keys.append(key)
-            
-            for key in stale_keys:
-                del self.active_interviews[key]
-                cleaned_count += 1
-            
-            # Clean recent_joins older than 2 hours
-            stale_joins = []
-            for user_id, join_time in self.recent_joins.items():
-                if (now - join_time) > timedelta(hours=2):
-                    stale_joins.append(user_id)
-            
-            for user_id in stale_joins:
-                del self.recent_joins[user_id]
-                cleaned_count += 1
-            
-            # Clean last_online older than 7 days
-            stale_online = []
-            for user_id, last_time in self.last_online.items():
-                if (now - last_time) > timedelta(days=7):
-                    stale_online.append(user_id)
-            
-            for user_id in stale_online:
-                del self.last_online[user_id]
-                cleaned_count += 1
-            
-            if cleaned_count > 0:
-                logger.info(f"🧹 Cleaned {cleaned_count} stale entries")
-                self.save_state()
+    def start_auto_save(self):
+        """Start automatic saving every 5 minutes"""
+        self.auto_save_task.start()
     
-    # Thread-safe getters and setters
+    @tasks.loop(minutes=5)
+    async def auto_save_task(self):
+        """Auto-save state every 5 minutes"""
+        self.save_state()
+    
+    @auto_save_task.before_loop
+    async def before_auto_save(self):
+        """Wait until bot is ready"""
+        # This depends on your bot setup - you might need to import the bot
+        # or use a different method to wait
+        await asyncio.sleep(10)  # Wait 10 seconds before starting
+    
+    # ======== INTERVIEW MANAGEMENT ========
+    
+    def set_active_interview(self, user_id, interview_data):
+        """Set active interview data"""
+        self.state['active_interviews'][str(user_id)] = interview_data
+    
     def get_active_interview(self, user_id):
-        with self.lock:
-            return self.active_interviews.get(user_id)
-    
-    def set_active_interview(self, user_id, data):
-        with self.lock:
-            self.active_interviews[user_id] = data
+        """Get active interview data"""
+        return self.state['active_interviews'].get(str(user_id))
     
     def remove_active_interview(self, user_id):
-        with self.lock:
-            if user_id in self.active_interviews:
-                del self.active_interviews[user_id]
-    
-    def add_checked_user(self, user_id):
-        with self.lock:
-            self.checked_users.add(user_id)
-    
-    def is_user_checked(self, user_id):
-        with self.lock:
-            return user_id in self.checked_users
-    
-    def get_recent_join(self, user_id):
-        with self.lock:
-            return self.recent_joins.get(user_id)
-    
-    def add_recent_join(self, user_id, join_time):
-        with self.lock:
-            self.recent_joins[user_id] = join_time
-    
-    def remove_recent_join(self, user_id):
-        with self.lock:
-            if user_id in self.recent_joins:
-                del self.recent_joins[user_id]
+        """Remove active interview"""
+        user_id_str = str(user_id)
+        if user_id_str in self.state['active_interviews']:
+            del self.state['active_interviews'][user_id_str]
+            return True
+        return False
     
     def add_completed_interview(self, user_id):
-        with self.lock:
-            self.completed_interviews.add(user_id)
-    
-    def is_interview_completed(self, user_id):
-        with self.lock:
-            return user_id in self.completed_interviews
+        """Add user to completed interviews"""
+        if user_id not in self.state['completed_interviews']:
+            self.state['completed_interviews'].append(user_id)
     
     def add_failed_interview(self, user_id):
-        with self.lock:
-            self.failed_interviews.add(user_id)
+        """Add user to failed interviews"""
+        if user_id not in self.state['failed_interviews']:
+            self.state['failed_interviews'].append(user_id)
     
-    def is_interview_failed(self, user_id):
-        with self.lock:
-            return user_id in self.failed_interviews
+    # ======== TIMEOUT MANAGEMENT ========
+    
+    @property
+    def interview_timeouts(self):
+        """Get interview timeouts"""
+        return self.state['interview_timeouts']
+    
+    @interview_timeouts.setter
+    def interview_timeouts(self, value):
+        """Set interview timeouts"""
+        self.state['interview_timeouts'] = value
+    
+    # ======== RECENT JOINS MANAGEMENT ========
+    
+    def add_recent_join(self, user_id, join_time):
+        """Add recent join to prevent rapid rejoins"""
+        self.state['recent_joins'][str(user_id)] = join_time.isoformat()
+    
+    def get_recent_join(self, user_id):
+        """Get recent join time"""
+        join_time_str = self.state['recent_joins'].get(str(user_id))
+        if join_time_str:
+            try:
+                return datetime.fromisoformat(join_time_str)
+            except:
+                return None
+        return None
+    
+    def cleanup_stale_data(self):
+        """Clean up stale data - NON-BLOCKING VERSION"""
+        try:
+            now = datetime.now()
+            cleaned = 0
+            
+            # Clean recent joins older than 5 minutes
+            user_ids_to_remove = []
+            for user_id_str, join_time_str in self.state['recent_joins'].items():
+                try:
+                    join_time = datetime.fromisoformat(join_time_str)
+                    if (now - join_time).total_seconds() > 300:  # 5 minutes
+                        user_ids_to_remove.append(user_id_str)
+                        cleaned += 1
+                except:
+                    user_ids_to_remove.append(user_id_str)
+            
+            for user_id_str in user_ids_to_remove:
+                del self.state['recent_joins'][user_id_str]
+            
+            # Clean completed interviews older than 7 days
+            if 'completed_interviews_timestamps' not in self.state:
+                self.state['completed_interviews_timestamps'] = {}
+            
+            # Clean failed interviews older than 7 days
+            if 'failed_interviews_timestamps' not in self.state:
+                self.state['failed_interviews_timestamps'] = {}
+            
+            logger.debug(f"🧹 Cleaned {cleaned} stale entries")
+            
+            # Save state WITHOUT potentially blocking operations
+            self.save_state_async()
+            
+        except Exception as e:
+            logger.error(f"❌ Error in cleanup_stale_data: {e}")
+    
+    def save_state_async(self):
+        """Save state asynchronously to avoid blocking"""
+        # Use threading to save in background
+        thread = threading.Thread(target=self._save_in_background, daemon=True)
+        thread.start()
+    
+    def _save_in_background(self):
+        """Save state in background thread"""
+        try:
+            # Create a copy of state to avoid modifying during save
+            state_copy = self.state.copy()
+            state_copy['last_save'] = datetime.now().isoformat()
+            
+            if self.lock.acquire(timeout=2.0):  # 2 second timeout
+                try:
+                    with open(self.data_file, 'w') as f:
+                        json.dump(state_copy, f, indent=2, default=str)
+                    logger.debug(f"💾 Background saved state to {self.data_file}")
+                except Exception as e:
+                    logger.error(f"❌ Error in background save: {e}")
+                finally:
+                    self.lock.release()
+            else:
+                logger.warning("⏰ Could not acquire lock for background save")
+        except Exception as e:
+            logger.error(f"❌ Error in background save thread: {e}")
+    
+    # ======== ONLINE TRACKING ========
+    
+    def set_online_tracking(self, user_id, tracking_data):
+        """Set online tracking data"""
+        self.state['online_tracking'][str(user_id)] = tracking_data
+    
+    def get_online_tracking(self, user_id):
+        """Get online tracking data"""
+        return self.state['online_tracking'].get(str(user_id))
+    
+    def remove_online_tracking(self, user_id):
+        """Remove online tracking"""
+        user_id_str = str(user_id)
+        if user_id_str in self.state['online_tracking']:
+            del self.state['online_tracking'][user_id_str]
+            return True
+        return False
+    
+    def get_all_tracked_users(self):
+        """Get all tracked users"""
+        return list(self.state['online_tracking'].keys())
+    
+    # ======== CLEANUP CHECK DATES ========
+    
+    def get_cleanup_check_date(self, user_id):
+        """Get cleanup check date for a member"""
+        check_date_str = self.state['cleanup_check_dates'].get(str(user_id))
+        if check_date_str:
+            try:
+                return datetime.fromisoformat(check_date_str)
+            except:
+                return None
+        return None
+    
+    def set_cleanup_check_date(self, user_id, check_date):
+        """Set cleanup check date for a member"""
+        self.state['cleanup_check_dates'][str(user_id)] = check_date.isoformat()
+    
+    def remove_cleanup_check_date(self, user_id):
+        """Remove cleanup check date"""
+        user_id_str = str(user_id)
+        if user_id_str in self.state['cleanup_check_dates']:
+            del self.state['cleanup_check_dates'][user_id_str]
+            return True
+        return False
+    
+    # ======== PROPERTIES FOR COMPATIBILITY ========
+    
+    @property
+    def active_interviews(self):
+        """Get active interviews"""
+        return self.state['active_interviews']
