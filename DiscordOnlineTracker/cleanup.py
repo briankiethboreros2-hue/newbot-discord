@@ -282,7 +282,7 @@ class DemotedReviewVoteView(discord.ui.View):
             if hasattr(self, 'message'):
                 await self.message.edit(view=self)
         except:
-            pass
+        pass
     
     async def on_error(self, interaction, error, item):
         """Handle errors in view"""
@@ -479,6 +479,135 @@ class GhostUserVoteView(discord.ui.View):
         except:
             pass
 
+# ======== INACTIVE ROLE VOTE VIEW ========
+class InactiveRoleVoteView(discord.ui.View):
+    def __init__(self, member_id, member_name, days_inactive):
+        super().__init__(timeout=86400)  # 24 hour timeout
+        self.member_id = member_id
+        self.member_name = member_name
+        self.days_inactive = days_inactive
+        self.vote_made = False
+        
+    @discord.ui.button(label="Promote Back", style=discord.ButtonStyle.success, emoji="⬆️")
+    async def promote_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_vote(interaction, "promote")
+        
+    @discord.ui.button(label="Kick", style=discord.ButtonStyle.danger, emoji="👢")
+    async def kick_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_vote(interaction, "kick")
+    
+    async def handle_vote(self, interaction, vote_type):
+        if self.vote_made:
+            await interaction.response.send_message("Already decided!", ephemeral=True)
+            return
+        
+        self.vote_made = True
+        
+        try:
+            await interaction.message.delete()
+        except:
+            pass
+        
+        admin_name = interaction.user.display_name
+        
+        if vote_type == "promote":
+            await self.process_promote(interaction, admin_name)
+        elif vote_type == "kick":
+            await self.process_kick(interaction, admin_name)
+        
+        self.stop()
+    
+    async def process_promote(self, interaction, admin_name):
+        """Promote back to Impèrius🔥"""
+        try:
+            member = interaction.guild.get_member(self.member_id)
+            if member:
+                imperius_role = interaction.guild.get_role(1437570031822176408)
+                inactive_role = interaction.guild.get_role(1454803208995340328)
+                
+                if imperius_role and inactive_role:
+                    await member.remove_roles(inactive_role)
+                    await member.add_roles(imperius_role)
+                    
+                    # Record promotion grace period
+                    if hasattr(interaction.client, 'cleanup_system'):
+                        await interaction.client.cleanup_system.record_promotion(member.id)
+                    
+                    # Post in tryout result channel
+                    result_channel = interaction.guild.get_channel(1455205385463009310)
+                    if result_channel:
+                        await result_channel.send(f"🎉 {member.mention} has been promoted back to Impèrius🔥 from Inactive!")
+                    
+                    embed = discord.Embed(
+                        title="✅ Inactive Member Promoted Back",
+                        description=f"**Member:** {member.mention} ({member.display_name})\n"
+                                  f"**Action:** Promoted back to Impèrius🔥\n"
+                                  f"**Days Inactive:** {self.days_inactive} days\n"
+                                  f"**Decided By:** {admin_name}",
+                        color=discord.Color.green(),
+                        timestamp=datetime.now()
+                    )
+                    await interaction.channel.send(embed=embed)
+                    
+                    try:
+                        await member.send(f"🎉 **You have been promoted back to Impèrius🔥 from Inactive!** Welcome back!")
+                    except:
+                        pass
+                    
+                    logger.info(f"Promoted {member.name} back from Inactive (voted by {admin_name})")
+        except Exception as e:
+            logger.error(f"Error promoting from inactive: {e}")
+            await interaction.channel.send(f"❌ Error promoting: {e}")
+    
+    async def process_kick(self, interaction, admin_name):
+        """Kick the inactive member"""
+        try:
+            member = interaction.guild.get_member(self.member_id)
+            if member:
+                try:
+                    await member.send("You have been kicked from Impèrius due to prolonged inactivity.")
+                except:
+                    pass
+                
+                await member.kick(reason=f"Inactive {self.days_inactive} days - Voted by {admin_name}")
+                
+                embed = discord.Embed(
+                    title="👢 Inactive Member Kicked",
+                    description=f"**Member:** {member.display_name}\n"
+                              f"**Action:** Kicked from server\n"
+                              f"**Days Inactive:** {self.days_inactive} days\n"
+                              f"**Decided By:** {admin_name}",
+                    color=discord.Color.red(),
+                    timestamp=datetime.now()
+                )
+                await interaction.channel.send(embed=embed)
+                
+                logger.info(f"Kicked inactive member {member.name} (voted by {admin_name})")
+        except Exception as e:
+            logger.error(f"Error kicking inactive member: {e}")
+            await interaction.channel.send(f"❌ Error kicking: {e}")
+    
+    async def on_timeout(self):
+        """Handle view timeout"""
+        try:
+            for item in self.children:
+                item.disabled = True
+            if hasattr(self, 'message'):
+                await self.message.edit(view=self)
+        except:
+            pass
+    
+    async def on_error(self, interaction, error, item):
+        """Handle errors in view"""
+        logger.error(f"View error in InactiveRoleVoteView: {error}")
+        try:
+            await interaction.response.send_message(
+                "❌ An error occurred. Please notify an admin.",
+                ephemeral=True
+            )
+        except:
+            pass
+
 # ======== CLEANUP SYSTEM ========
 class CleanupSystem:
     def __init__(self, bot, guild, state):
@@ -496,6 +625,9 @@ class CleanupSystem:
         
         # Grace period for newly promoted members (7 days)
         self.member_grace_period = {}  # {member_id: protection_until_date}
+        
+        # Track inactive role members to prevent immediate re-flagging
+        self.inactive_role_checked = {}  # {member_id: last_check_date}
     
     def start_cleanup_task(self):
         """Start the cleanup task"""
@@ -736,6 +868,24 @@ class CleanupSystem:
             logger.error(f"Error checking member activity: {e}")
             return False  # Default to false to avoid accidental flags
     
+    async def find_demotion_date(self, member, review_channel):
+        """Try to find when member was demoted to Inactive role"""
+        try:
+            # Look for demotion messages in the last 60 days
+            sixty_days_ago = datetime.now() - timedelta(days=60)
+            
+            async for message in review_channel.history(limit=200, after=sixty_days_ago):
+                if message.author == self.bot.user and message.embeds:
+                    for embed in message.embeds:
+                        if embed.description and str(member.id) in embed.description:
+                            # Check if it's a demotion message
+                            title = embed.title or ""
+                            if "Demoted" in title or "demoted" in embed.description.lower():
+                                return message.created_at.replace(tzinfo=None) if message.created_at.tzinfo else message.created_at
+            return None
+        except:
+            return None
+    
     async def record_admin_pardon(self, member_id):
         """Call this when admin pardons a member (from InactiveMemberVoteView.process_keep)"""
         try:
@@ -752,7 +902,7 @@ class CleanupSystem:
             return False
     
     async def check_ghost_users(self):
-        """Check for users with no roles (ghosts) - posts to REVIEW channel"""
+        """Check for users with no roles (ghosts) AND inactive role members - posts to REVIEW channel"""
         try:
             # Validate resources
             if not await self.validate_resources():
@@ -769,8 +919,11 @@ class CleanupSystem:
             if (now - self.last_ghost_check).days < 1:
                 return
             
-            logger.info("👻 Checking for ghost users...")
-            ghost_count = 0
+            logger.info("👻 Checking for ghost users AND inactive role members...")
+            flagged_count = 0
+            
+            # Get inactive role
+            inactive_role = self.guild.get_role(1454803208995340328)  # Inactive role
             
             for member in self.guild.members:
                 if member.bot:
@@ -783,10 +936,11 @@ class CleanupSystem:
                     if hours_since_join < 24:
                         continue
                 
-                # Check if member has only @everyone role
+                member_flagged = False
+                days_in_server = (now - join_date).days
+                
+                # ===== CHECK 1: Ghost users (no roles) =====
                 if len(member.roles) == 1:  # Only @everyone
-                    days_in_server = (now - join_date).days
-                    
                     if days_in_server >= 1:
                         # Check if already posted today
                         already_posted = await self.is_user_already_posted_today(review_channel, member.id, "ghost")
@@ -803,15 +957,55 @@ class CleanupSystem:
                             view = GhostUserVoteView(member.id, member.name, days_in_server)
                             await review_channel.send(embed=embed, view=view)
                             
-                            ghost_count += 1
+                            flagged_count += 1
+                            member_flagged = True
                             logger.info(f"Posted ghost user: {member.name}")
+                            await asyncio.sleep(2)  # Rate limiting
+                
+                # ===== CHECK 2: Inactive role members =====
+                elif inactive_role and inactive_role in member.roles:
+                    # Check if we've flagged this inactive member recently (within 7 days)
+                    if member.id in self.inactive_role_checked:
+                        last_check = self.inactive_role_checked[member.id]
+                        if (now - last_check).days < 7:
+                            continue  # Skip, checked recently
+                    
+                    # Try to find when they got demoted
+                    demotion_date = await self.find_demotion_date(member, review_channel)
+                    if not demotion_date:
+                        demotion_date = join_date  # Fallback to join date
+                    
+                    days_inactive = (now - demotion_date).days
+                    
+                    # Only flag if inactive for at least 7 days
+                    if days_inactive >= 7:
+                        # Check if already posted today
+                        already_posted = await self.is_user_already_posted_today(review_channel, member.id, "inactive_role")
+                        if not already_posted and not member_flagged:  # Don't double-flag
+                            embed = discord.Embed(
+                                title="⏸️ Inactive Role Member",
+                                description=f"**User:** {member.mention} ({member.name})\n"
+                                          f"**Role:** Inactive🔻\n"
+                                          f"**Days Inactive:** {days_inactive} days\n"
+                                          f"**Days in server:** {days_in_server} days\n"
+                                          f"**Status:** Has Inactive role",
+                                color=discord.Color.orange(),
+                                timestamp=now
+                            )
+                            
+                            view = InactiveRoleVoteView(member.id, member.name, days_inactive)
+                            await review_channel.send(embed=embed, view=view)
+                            
+                            flagged_count += 1
+                            self.inactive_role_checked[member.id] = now  # Record that we checked
+                            logger.info(f"Posted inactive role member: {member.name} ({days_inactive} days inactive)")
                             await asyncio.sleep(2)  # Rate limiting
             
             self.last_ghost_check = now
-            logger.info(f"✅ Ghost user check completed: {ghost_count} found")
+            logger.info(f"✅ Ghost/Inactive check completed: {flagged_count} found")
             
         except Exception as e:
-            logger.error(f"❌ Error checking ghost users: {e}")
+            logger.error(f"❌ Error checking ghost/inactive users: {e}")
     
     async def get_last_activity_date(self, member, attendance_channel):
         """Get the last date a member was announced online"""
@@ -852,6 +1046,8 @@ class CleanupSystem:
                                     return True
                                 elif post_type == "ghost" and ("Ghost" in title or "👻" in title):
                                     return True
+                                elif post_type == "inactive_role" and ("Inactive Role" in title or "⏸️" in title):
+                                    return True
         except:
             pass
         return False
@@ -863,6 +1059,7 @@ class CleanupSystem:
             stats = {
                 "members_tracked": len(self.member_last_check),
                 "in_grace_period": len(self.member_grace_period),
+                "inactive_role_tracked": len(self.inactive_role_checked),
                 "last_ghost_check": self.last_ghost_check,
                 "last_inactive_check": self.last_inactive_check,
             }
