@@ -282,7 +282,7 @@ class DemotedReviewVoteView(discord.ui.View):
             if hasattr(self, 'message'):
                 await self.message.edit(view=self)
         except:
-        pass
+            pass
     
     async def on_error(self, interaction, error, item):
         """Handle errors in view"""
