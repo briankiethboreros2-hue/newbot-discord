@@ -73,18 +73,24 @@ class StateManager:
             logger.error(f"❌ Error in save_state: {e}")
     
     def start_auto_save(self):
-        """Start automatic saving every 5 minutes"""
-        self.auto_save_task.start()
-    
-    @tasks.loop(minutes=5)
-    async def auto_save_task(self):
-        """Auto-save state every 5 minutes"""
-        self.save_state()
-    
-    @auto_save_task.before_loop
-    async def before_auto_save(self):
-        """Wait 10 seconds before starting auto-save"""
-        await asyncio.sleep(10)
+        """Start automatic saving every 5 minutes - SIMPLIFIED VERSION"""
+        import threading
+        import time
+        
+        def auto_save_loop():
+            """Background thread for auto-saving"""
+            while True:
+                try:
+                    time.sleep(300)  # 5 minutes = 300 seconds
+                    self.save_state()
+                except Exception as e:
+                    logger.error(f"Auto-save error: {e}")
+                    time.sleep(60)  # Wait 1 minute on error
+        
+        # Start auto-save in background thread
+        thread = threading.Thread(target=auto_save_loop, daemon=True)
+        thread.start()
+        logger.info("✅ Started auto-save background thread")
     
     def cleanup_recent_joins_on_demand(self):
         """Clean recent joins without saving state - call this when checking"""
