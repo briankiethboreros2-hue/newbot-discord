@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 # ======== INACTIVE MEMBER VOTE VIEW ========
 class InactiveMemberVoteView(discord.ui.View):
     def __init__(self, member_id, member_name, days_inactive, cleanup_system=None):
-        super().__init__(timeout=None)
+        super().__init__(timeout=86400)  # 24 hour timeout instead of None
         self.member_id = member_id
         self.member_name = member_name
         self.days_inactive = days_inactive
@@ -106,6 +106,7 @@ class InactiveMemberVoteView(discord.ui.View):
                         
         except Exception as e:
             logger.error(f"Error demoting member: {e}")
+            await interaction.channel.send(f"❌ Error demoting member: {e}")
     
     async def process_keep(self, interaction, admin_name):
         """Keep member's role"""
@@ -132,11 +133,33 @@ class InactiveMemberVoteView(discord.ui.View):
                 logger.info(f"Kept {member.name}'s role (voted by {admin_name})")
         except Exception as e:
             logger.error(f"Error keeping role: {e}")
+            await interaction.channel.send(f"❌ Error recording pardon: {e}")
+    
+    async def on_timeout(self):
+        """Handle view timeout"""
+        try:
+            for item in self.children:
+                item.disabled = True
+            if hasattr(self, 'message'):
+                await self.message.edit(view=self)
+        except:
+            pass
+    
+    async def on_error(self, interaction, error, item):
+        """Handle errors in view"""
+        logger.error(f"View error in InactiveMemberVoteView: {error}")
+        try:
+            await interaction.response.send_message(
+                "❌ An error occurred. Please notify an admin.",
+                ephemeral=True
+            )
+        except:
+            pass
 
 # ======== DEMOTED REVIEW VOTE VIEW ========
 class DemotedReviewVoteView(discord.ui.View):
     def __init__(self, member_id, member_name):
-        super().__init__(timeout=None)
+        super().__init__(timeout=86400)  # 24 hour timeout
         self.member_id = member_id
         self.member_name = member_name
         self.vote_made = False
@@ -191,6 +214,10 @@ class DemotedReviewVoteView(discord.ui.View):
                         except:
                             pass
                     
+                    # Record promotion grace period
+                    if hasattr(interaction.client, 'cleanup_system'):
+                        await interaction.client.cleanup_system.record_promotion(member.id)
+                    
                     # Post in tryout result channel
                     result_channel = interaction.guild.get_channel(1455205385463009310)
                     if result_channel:
@@ -215,6 +242,7 @@ class DemotedReviewVoteView(discord.ui.View):
                     logger.info(f"Promoted {member.name} back (voted by {admin_name})")
         except Exception as e:
             logger.error(f"Error promoting back: {e}")
+            await interaction.channel.send(f"❌ Error promoting member: {e}")
     
     async def process_kick(self, interaction, admin_name):
         """Kick the member"""
@@ -244,11 +272,33 @@ class DemotedReviewVoteView(discord.ui.View):
                 logger.info(f"Kicked {member.name} (voted by {admin_name})")
         except Exception as e:
             logger.error(f"Error kicking member: {e}")
+            await interaction.channel.send(f"❌ Error kicking member: {e}")
+    
+    async def on_timeout(self):
+        """Handle view timeout"""
+        try:
+            for item in self.children:
+                item.disabled = True
+            if hasattr(self, 'message'):
+                await self.message.edit(view=self)
+        except:
+            pass
+    
+    async def on_error(self, interaction, error, item):
+        """Handle errors in view"""
+        logger.error(f"View error in DemotedReviewVoteView: {error}")
+        try:
+            await interaction.response.send_message(
+                "❌ An error occurred. Please notify an admin.",
+                ephemeral=True
+            )
+        except:
+            pass
 
 # ======== GHOST USER VOTE VIEW ========
 class GhostUserVoteView(discord.ui.View):
     def __init__(self, member_id, member_name, days_in_server):
-        super().__init__(timeout=None)
+        super().__init__(timeout=86400)  # 24 hour timeout
         self.member_id = member_id
         self.member_name = member_name
         self.days_in_server = days_in_server
@@ -308,6 +358,7 @@ class GhostUserVoteView(discord.ui.View):
                 await interaction.channel.send(embed=embed)
         except Exception as e:
             logger.error(f"Error kicking ghost user: {e}")
+            await interaction.channel.send(f"❌ Error kicking ghost user: {e}")
     
     async def process_ghost_promote(self, interaction, admin_name):
         """Promote ghost user directly to Impèrius🔥"""
@@ -318,6 +369,10 @@ class GhostUserVoteView(discord.ui.View):
                 
                 if imperius_role:
                     await member.add_roles(imperius_role)
+                    
+                    # Record promotion grace period
+                    if hasattr(interaction.client, 'cleanup_system'):
+                        await interaction.client.cleanup_system.record_promotion(member.id)
                     
                     # Post in tryout result channel
                     result_channel = interaction.guild.get_channel(1455205385463009310)
@@ -341,6 +396,7 @@ class GhostUserVoteView(discord.ui.View):
                         pass
         except Exception as e:
             logger.error(f"Error promoting ghost user: {e}")
+            await interaction.channel.send(f"❌ Error promoting ghost user: {e}")
     
     async def process_ghost_retryout(self, interaction, admin_name):
         """Send ghost user to re-tryout interview"""
@@ -400,6 +456,28 @@ class GhostUserVoteView(discord.ui.View):
                 
         except Exception as e:
             logger.error(f"Error sending ghost user to tryout: {e}")
+            await interaction.channel.send(f"❌ Error sending to tryout: {e}")
+    
+    async def on_timeout(self):
+        """Handle view timeout"""
+        try:
+            for item in self.children:
+                item.disabled = True
+            if hasattr(self, 'message'):
+                await self.message.edit(view=self)
+        except:
+            pass
+    
+    async def on_error(self, interaction, error, item):
+        """Handle errors in view"""
+        logger.error(f"View error in GhostUserVoteView: {error}")
+        try:
+            await interaction.response.send_message(
+                "❌ An error occurred. Please notify an admin.",
+                ephemeral=True
+            )
+        except:
+            pass
 
 # ======== CLEANUP SYSTEM ========
 class CleanupSystem:
@@ -415,6 +493,9 @@ class CleanupSystem:
         
         # Track when each member was last checked
         self.member_last_check = {}  # {member_id: last_check_date}
+        
+        # Grace period for newly promoted members (7 days)
+        self.member_grace_period = {}  # {member_id: protection_until_date}
     
     def start_cleanup_task(self):
         """Start the cleanup task"""
@@ -425,6 +506,7 @@ class CleanupSystem:
         try:
             imperius_role = self.guild.get_role(1437570031822176408)
             if not imperius_role:
+                logger.error("❌ Impèrius role not found during initialization")
                 return
             
             now = datetime.now()
@@ -449,6 +531,11 @@ class CleanupSystem:
         """Main cleanup task - runs daily"""
         logger.info("🚀 Running cleanup task...")
         
+        # Validate resources before running
+        if not await self.validate_resources():
+            logger.error("❌ Cleanup task cannot run due to missing resources")
+            return
+        
         # Check for ghost users (every day)
         await self.check_ghost_users()
         
@@ -457,32 +544,87 @@ class CleanupSystem:
         
         logger.info("✅ Cleanup task completed")
     
+    async def validate_resources(self):
+        """Validate all required resources exist"""
+        try:
+            imperius_role = self.guild.get_role(1437570031822176408)
+            inactive_role = self.guild.get_role(1454803208995340328)
+            admin_channel = self.guild.get_channel(self.admin_channel_id)
+            attendance_channel = self.guild.get_channel(self.attendance_channel_id)
+            review_channel = self.guild.get_channel(self.review_channel_id)
+            
+            missing = []
+            if not imperius_role: missing.append("Impèrius role (1437570031822176408)")
+            if not inactive_role: missing.append("Inactive role (1454803208995340328)")
+            if not admin_channel: missing.append(f"Admin channel ({self.admin_channel_id})")
+            if not attendance_channel: missing.append(f"Attendance channel ({self.attendance_channel_id})")
+            if not review_channel: missing.append(f"Review channel ({self.review_channel_id})")
+            
+            if missing:
+                logger.error(f"❌ Missing resources: {', '.join(missing)}")
+                
+                # Try to notify in any available channel
+                error_channel = admin_channel or self.guild.system_channel
+                if error_channel:
+                    try:
+                        await error_channel.send(
+                            f"⚠️ **Cleanup System Error**\n"
+                            f"Missing resources: {', '.join(missing)}\n"
+                            f"Please ensure all roles and channels exist."
+                        )
+                    except:
+                        pass
+                
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error validating resources: {e}")
+            return False
+    
     @cleanup_task.before_loop
     async def before_cleanup_task(self):
         """Wait until bot is ready"""
         await self.bot.wait_until_ready()
     
+    async def record_promotion(self, member_id):
+        """Record when a member is promoted (from ghost promote or demoted review promote)"""
+        try:
+            now = datetime.now()
+            grace_until = now + timedelta(days=7)  # 7-day grace period
+            
+            self.member_grace_period[member_id] = grace_until
+            self.member_last_check[member_id] = now
+            
+            logger.info(f"✅ Promotion recorded for member {member_id}. Grace until: {grace_until.strftime('%Y-%m-%d')}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error recording promotion: {e}")
+            return False
+    
     async def check_inactive_members_15day_cycle(self):
         """Check for inactive Impèrius🔥 members - only checks each member every 15 days"""
         try:
+            # Validate resources
+            if not await self.validate_resources():
+                return
+            
             admin_channel = self.guild.get_channel(self.admin_channel_id)
             attendance_channel = self.guild.get_channel(self.attendance_channel_id)
+            imperius_role = self.guild.get_role(1437570031822176408)
             
-            if not admin_channel or not attendance_channel:
-                logger.error("❌ Required channels not found!")
+            if not admin_channel or not attendance_channel or not imperius_role:
+                logger.error("❌ Required resources not found for inactive check")
                 return
             
             now = datetime.now()
-            imperius_role = self.guild.get_role(1437570031822176408)
-            
-            if not imperius_role:
-                logger.error("❌ Impèrius🔥 role not found!")
-                return
             
             logger.info(f"😴 Starting 15-day cycle check for {len(imperius_role.members)} Impèrius members...")
             
             members_checked = 0
             members_skipped = 0
+            members_grace = 0
             members_flagged = 0
             
             # Check each Impèrius member
@@ -491,6 +633,19 @@ class CleanupSystem:
                     continue
                 
                 member_id = member.id
+                
+                # Check if member is in grace period
+                if member_id in self.member_grace_period:
+                    grace_until = self.member_grace_period[member_id]
+                    if now < grace_until:
+                        # Still in grace period, skip
+                        members_grace += 1
+                        logger.debug(f"Skipping {member.name} - in grace period until {grace_until}")
+                        continue
+                    else:
+                        # Grace period expired, remove from tracking
+                        del self.member_grace_period[member_id]
+                
                 last_check_date = self.member_last_check.get(member_id)
                 
                 # Only check if 15+ days since last check OR never checked before
@@ -555,7 +710,14 @@ class CleanupSystem:
                     self.member_last_check[member_id] = now
                     logger.debug(f"Updated last check for {member.name}: {now.strftime('%Y-%m-%d')}")
             
-            logger.info(f"✅ 15-day cycle check completed: {members_checked} checked, {members_skipped} skipped, {members_flagged} flagged")
+            # Update last inactive check time
+            self.last_inactive_check = now
+            
+            logger.info(
+                f"✅ 15-day cycle check completed: "
+                f"{members_checked} checked, {members_skipped} skipped, "
+                f"{members_grace} in grace, {members_flagged} flagged"
+            )
             
         except Exception as e:
             logger.error(f"❌ Error checking inactive members (15-day cycle): {e}")
@@ -563,7 +725,8 @@ class CleanupSystem:
     async def was_member_active_since(self, member, attendance_channel, since_date):
         """Check if member was active in attendance channel since given date"""
         try:
-            async for message in attendance_channel.history(limit=100, after=since_date):
+            # Increased limit from 100 to 1000 to prevent false flags
+            async for message in attendance_channel.history(limit=1000, after=since_date):
                 if message.author == self.bot.user and message.embeds:
                     for embed in message.embeds:
                         if embed.description and str(member.id) in embed.description:
@@ -571,16 +734,30 @@ class CleanupSystem:
             return False
         except Exception as e:
             logger.error(f"Error checking member activity: {e}")
-            return False
+            return False  # Default to false to avoid accidental flags
     
     async def record_admin_pardon(self, member_id):
         """Call this when admin pardons a member (from InactiveMemberVoteView.process_keep)"""
-        self.member_last_check[member_id] = datetime.now()
-        logger.info(f"Admin pardon recorded for member {member_id}, last check reset to today")
+        try:
+            self.member_last_check[member_id] = datetime.now()
+            
+            # Also give a grace period after pardon
+            grace_until = datetime.now() + timedelta(days=7)
+            self.member_grace_period[member_id] = grace_until
+            
+            logger.info(f"✅ Admin pardon recorded for member {member_id}. Last check reset and grace period added.")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error recording admin pardon: {e}")
+            return False
     
     async def check_ghost_users(self):
         """Check for users with no roles (ghosts) - posts to REVIEW channel"""
         try:
+            # Validate resources
+            if not await self.validate_resources():
+                return
+            
             review_channel = self.guild.get_channel(self.review_channel_id)
             if not review_channel:
                 logger.error(f"❌ Review channel not found: {self.review_channel_id}")
@@ -641,7 +818,7 @@ class CleanupSystem:
         try:
             last_date = None
             
-            async for message in attendance_channel.history(limit=200):
+            async for message in attendance_channel.history(limit=500):
                 if message.author == self.bot.user and message.embeds:
                     for embed in message.embeds:
                         if embed.description and str(member.id) in embed.description:
@@ -664,7 +841,7 @@ class CleanupSystem:
         try:
             today = datetime.now().date()
             
-            async for message in channel.history(limit=50):
+            async for message in channel.history(limit=100):
                 if message.author == self.bot.user and message.created_at.date() == today:
                     if message.embeds:
                         for embed in message.embeds:
@@ -678,3 +855,38 @@ class CleanupSystem:
         except:
             pass
         return False
+    
+    async def get_statistics(self):
+        """Get cleanup system statistics"""
+        try:
+            now = datetime.now()
+            stats = {
+                "members_tracked": len(self.member_last_check),
+                "in_grace_period": len(self.member_grace_period),
+                "last_ghost_check": self.last_ghost_check,
+                "last_inactive_check": self.last_inactive_check,
+            }
+            
+            # Calculate next checks
+            if self.member_last_check:
+                soonest_check = None
+                for member_id, last_check in self.member_last_check.items():
+                    # Skip if in grace period
+                    if member_id in self.member_grace_period:
+                        grace_until = self.member_grace_period[member_id]
+                        if now < grace_until:
+                            continue
+                    
+                    next_check = last_check + timedelta(days=15)
+                    if not soonest_check or next_check < soonest_check:
+                        soonest_check = next_check
+                
+                if soonest_check:
+                    stats["next_inactive_check"] = soonest_check
+                    stats["days_until_next"] = (soonest_check - now).days
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error getting statistics: {e}")
+            return {}
