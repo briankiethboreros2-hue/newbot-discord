@@ -61,8 +61,9 @@ class ImperialBot(commands.Bot):
         if hasattr(self.state, 'start_auto_save'):
             self.state.start_auto_save()
         
-        if hasattr(self, 'cleanup_state_task'):
-            self.cleanup_state_task.start()
+        # COMMENTED OUT - causes deadlock issues
+        # if hasattr(self, 'cleanup_state_task'):
+        #     self.cleanup_state_task.start()
 
     async def on_ready(self):
         """Bot is ready - set up systems"""
@@ -118,19 +119,19 @@ class ImperialBot(commands.Bot):
         
         logger.info("✅ Bot is fully operational!")
 
-    @tasks.loop(hours=1)
-    async def cleanup_state_task(self):
-    """Clean up stale state data hourly - NON-BLOCKING"""
-    try:
-        if hasattr(self.state, 'cleanup_stale_data'):
-            # Run in executor to avoid blocking
-            await asyncio.to_thread(self.state.cleanup_stale_data)
-    except Exception as e:
-        logger.error(f"❌ Error in cleanup_state_task: {e}")
+    # COMMENTED OUT - This task causes deadlock issues
+    # @tasks.loop(hours=1)
+    # async def cleanup_state_task(self):
+    #     """Clean up stale state data hourly"""
+    #     try:
+    #         if hasattr(self.state, 'cleanup_stale_data'):
+    #             await asyncio.to_thread(self.state.cleanup_stale_data)
+    #     except Exception as e:
+    #         logger.error(f"❌ Error in cleanup_state_task: {e}")
     
-    @cleanup_state_task.before_loop
-    async def before_cleanup_state(self):
-        await self.wait_until_ready()
+    # @cleanup_state_task.before_loop
+    # async def before_cleanup_state(self):
+    #     await self.wait_until_ready()
 
     async def verify_resources(self):
         """Verify that all channels and roles exist"""
