@@ -60,10 +60,6 @@ class ImperialBot(commands.Bot):
         
         if hasattr(self.state, 'start_auto_save'):
             self.state.start_auto_save()
-        
-        # COMMENTED OUT - causes deadlock issues
-        # if hasattr(self, 'cleanup_state_task'):
-        #     self.cleanup_state_task.start()
 
     async def on_ready(self):
         """Bot is ready - set up systems"""
@@ -119,20 +115,6 @@ class ImperialBot(commands.Bot):
         
         logger.info("✅ Bot is fully operational!")
 
-    # COMMENTED OUT - This task causes deadlock issues
-    # @tasks.loop(hours=1)
-    # async def cleanup_state_task(self):
-    #     """Clean up stale state data hourly"""
-    #     try:
-    #         if hasattr(self.state, 'cleanup_stale_data'):
-    #             await asyncio.to_thread(self.state.cleanup_stale_data)
-    #     except Exception as e:
-    #         logger.error(f"❌ Error in cleanup_state_task: {e}")
-    
-    # @cleanup_state_task.before_loop
-    # async def before_cleanup_state(self):
-    #     await self.wait_until_ready()
-
     async def verify_resources(self):
         """Verify that all channels and roles exist"""
         if not self.main_guild:
@@ -173,14 +155,20 @@ class ImperialBot(commands.Bot):
                 logger.warning(f"⚠️ Role not found: {name} (ID: {role_id})")
 
     async def on_member_join(self, member):
-        """Handle new member joining"""
+        """Handle new member joining - WITH CLEAN ON DEMAND"""
         if not self.main_guild or member.guild.id != self.main_guild.id:
             return
             
         try:
             logger.info(f"👤 New member joined: {member.name} (ID: {member.id})")
             
-            # Prevent rapid rejoins
+            # Clean old entries FIRST (before checking)
+            if hasattr(self.state, 'cleanup_recent_joins_on_demand'):
+                cleaned = self.state.cleanup_recent_joins_on_demand()
+                if cleaned > 0:
+                    logger.debug(f"🧹 Cleaned {cleaned} old recent joins before checking {member.name}")
+            
+            # Check for rapid rejoin
             user_id = member.id
             current_time = datetime.now()
             
@@ -188,7 +176,7 @@ class ImperialBot(commands.Bot):
             if recent_join:
                 time_diff = (current_time - recent_join).total_seconds()
                 if time_diff < 60:  # 1 minute cooldown
-                    logger.info(f"⏸️ Skipping rapid rejoin for {member.name}")
+                    logger.info(f"⏸️ Skipping rapid rejoin for {member.name} (joined {time_diff:.0f}s ago)")
                     return
             
             # Store join time
