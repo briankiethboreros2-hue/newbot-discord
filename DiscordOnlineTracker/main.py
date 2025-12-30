@@ -221,7 +221,8 @@ class ImperialBot(commands.Bot):
         )
         
         # Avatar
-        embed.set_thumbnail(url=member.display_avatar.url)
+        if member.display_avatar:
+            embed.set_thumbnail(url=member.display_avatar.url)
         
         # Basic info
         embed.add_field(name="📛 Name", value=f"{member.name}#{member.discriminator}", inline=True)
@@ -295,6 +296,12 @@ class ImperialBot(commands.Bot):
         embed.set_footer(text="Bot automatically handles interviews, online tracking, and cleanup")
         
         await ctx.send(embed=embed)
+
+    # ======== COG REGISTRATION ========
+    
+    async def load_cogs(self):
+        """Load command cogs - but we're using commands directly in the class"""
+        pass  # Commands are defined as methods in this class
 
     async def verify_resources(self):
         """Verify that all channels and roles exist"""
@@ -416,9 +423,11 @@ class ImperialBot(commands.Bot):
     
     async def on_message(self, message):
         """Handle all messages (for DMs and interviews)"""
+        # Don't respond to ourselves
         if message.author == self.user:
             return
             
+        # Handle DM messages for interviews
         if isinstance(message.channel, discord.DMChannel):
             try:
                 logger.info(f"💬 DM from {message.author.name}: {message.content[:50]}...")
