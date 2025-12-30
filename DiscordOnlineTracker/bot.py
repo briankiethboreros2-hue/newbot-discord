@@ -2,7 +2,7 @@ import os
 import discord
 from discord.ext import commands
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import traceback
 import sys
 import time
@@ -149,8 +149,12 @@ async def help_command(ctx):
     admin_cmds = [
         ("`!cleanup`", "Run manual cleanup (ghost + inactive check)"),
         ("`!resetcheck @user`", "Reset member's inactivity check date"),
+        ("`!forceresetcheck @user`", "Force reset check + grace period"),
         ("`!interview @user`", "Force start interview for member"),
-        ("`!checkmember @user`", "Check member's detailed status")
+        ("`!checkmember @user`", "Check member's detailed status"),
+        ("`!checkinactive @user`", "Check if specific member is inactive"),
+        ("`!cleanupstats`", "Show cleanup system statistics"),
+        ("`!listgrace`", "List members in grace period")
     ]
     
     # Public commands
@@ -227,6 +231,36 @@ async def reset_member_check(ctx, member: discord.Member = None):
     else:
         await ctx.send("❌ Check tracking not available")
 
+@bot.command(name='forceresetcheck')
+@commands.has_permissions(administrator=True)
+async def force_reset_member_check(ctx, member: discord.Member = None):
+    """Force reset a member's check date and add grace period"""
+    global cleanup_system
+    
+    if not member:
+        await ctx.send("❌ Please mention a member: `!forceresetcheck @username`")
+        return
+    
+    if not cleanup_system:
+        await ctx.send("❌ Cleanup system not initialized")
+        return
+    
+    # Record pardon (resets check date and adds grace period)
+    if hasattr(cleanup_system, 'record_admin_pardon'):
+        success = await cleanup_system.record_admin_pardon(member.id)
+        
+        if success:
+            grace_until = cleanup_system.member_grace_period.get(member.id, datetime.now() + timedelta(days=7))
+            await ctx.send(
+                f"✅ Force reset check for {member.mention}\n"
+                f"📅 Last check reset to today\n"
+                f"🛡️ Grace period added until {grace_until.strftime('%Y-%m-%d')}"
+            )
+        else:
+            await ctx.send(f"❌ Failed to reset check for {member.mention}")
+    else:
+        await ctx.send("❌ Cleanup system doesn't support force reset")
+
 @bot.command(name='interview')
 @commands.has_permissions(administrator=True)
 async def force_interview(ctx, member: discord.Member = None):
@@ -290,6 +324,13 @@ async def check_member_status(ctx, member: discord.Member = None):
         else:
             embed.add_field(name="📅 Last Check", value="Never checked", inline=True)
     
+    # Check grace period
+    if cleanup_system and hasattr(cleanup_system, 'member_grace_period'):
+        if member.id in cleanup_system.member_grace_period:
+            grace_until = cleanup_system.member_grace_period[member.id]
+            days_left = (grace_until - datetime.now()).days + 1
+            embed.add_field(name="🛡️ Grace Period", value=f"Until: {grace_until.strftime('%Y-%m-%d')} ({days_left} days left)", inline=True)
+    
     # Dates
     if member.joined_at:
         join_date = member.joined_at.replace(tzinfo=None) if member.joined_at.tzinfo else member.joined_at
@@ -306,6 +347,183 @@ async def check_member_status(ctx, member: discord.Member = None):
     
     await ctx.send(embed=embed)
     logger.info(f"Checkmember command executed by {ctx.author.name} for {member.name}")
+
+@bot.command(name='checkinactive')
+@commands.has_permissions(administrator=True)
+async def check_specific_member(ctx, member: discord.Member = None):
+    """Manually check if a specific member is inactive"""
+    global cleanup_system, main_guild
+    
+    if not member:
+        await ctx.send("❌ Please mention a member: `!checkinactive @username`")
+        return
+    
+    if not cleanup_system:
+        await ctx.send("❌ Cleanup system not initialized")
+        return
+    
+    imperius_role = main_guild.get_role(1437570031822176408)
+    if not imperius_role or imperius_role not in member.roles:
+        await ctx.send(f"❌ {member.mention} is not in Impèrius🔥 role")
+        return
+    
+    # Check grace period
+    if hasattr(cleanup_system, 'member_grace_period') and member.id in cleanup_system.member_grace_period:
+        grace_until = cleanup_system.member_grace_period[member.id]
+        if datetime.now() < grace_until:
+            days_left = (grace_until - datetime.now()).days + 1
+            await ctx.send(f"🛡️ {member.mention} is in grace period for {days_left} more days (until {grace_until.strftime('%Y-%m-%d')})")
+            return
+    
+    # Check attendance
+    attendance_channel = main_guild.get_channel(1437768842871832597)
+    if not attendance_channel:
+        await ctx.send("❌ Attendance channel not found")
+        return
+    
+    # Check last 15 days
+    check_since = datetime.now() - timedelta(days=15)
+    
+    if hasattr(cleanup_system, 'was_member_active_since'):
+        was_active = await cleanup_system.was_member_active_since(member, attendance_channel, check_since)
+        
+        if was_active:
+            await ctx.send(f"✅ {member.mention} has been active in the last 15 days")
+        else:
+            # Check last check date
+            last_check = cleanup_system.member_last_check.get(member.id) if hasattr(cleanup_system, 'member_last_check') else None
+            if last_check:
+                days_ago = (datetime.now() - last_check).days
+                await ctx.send(f"⚠️ {member.mention} appears INACTIVE for 15+ days\n📅 Last checked: {last_check.strftime('%Y-%m-%d')} ({days_ago} days ago)")
+            else:
+                await ctx.send(f"⚠️ {member.mention} appears INACTIVE for 15+ days\n📅 Never checked before")
+    else:
+        await ctx.send("❌ Cleanup system doesn't support activity checking")
+
+@bot.command(name='cleanupstats')
+@commands.has_permissions(administrator=True)
+async def cleanup_stats(ctx):
+    """Show cleanup system statistics"""
+    global cleanup_system
+    
+    if not cleanup_system:
+        await ctx.send("❌ Cleanup system not initialized")
+        return
+    
+    # Try to get statistics from cleanup system
+    if hasattr(cleanup_system, 'get_statistics'):
+        stats = await cleanup_system.get_statistics()
+    else:
+        # Fallback basic stats
+        stats = {
+            "members_tracked": len(cleanup_system.member_last_check) if hasattr(cleanup_system, 'member_last_check') else 0,
+            "last_ghost_check": cleanup_system.last_ghost_check if hasattr(cleanup_system, 'last_ghost_check') else datetime.now(),
+            "last_inactive_check": cleanup_system.last_inactive_check if hasattr(cleanup_system, 'last_inactive_check') else datetime.now(),
+        }
+        
+        # Count grace period members
+        if hasattr(cleanup_system, 'member_grace_period'):
+            stats["in_grace_period"] = len(cleanup_system.member_grace_period)
+    
+    embed = discord.Embed(
+        title="📊 Cleanup System Statistics",
+        color=discord.Color.blue(),
+        timestamp=datetime.now()
+    )
+    
+    # Basic stats
+    embed.add_field(
+        name="👥 Members Tracked",
+        value=f"{stats.get('members_tracked', 0)} Impèrius members",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="🛡️ In Grace Period",
+        value=f"{stats.get('in_grace_period', 0)} members",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="👻 Last Ghost Check",
+        value=stats.get('last_ghost_check', datetime.now()).strftime("%Y-%m-%d %H:%M"),
+        inline=True
+    )
+    
+    embed.add_field(
+        name="😴 Last Inactive Check",
+        value=stats.get('last_inactive_check', datetime.now()).strftime("%Y-%m-%d %H:%M"),
+        inline=True
+    )
+    
+    # Next check info
+    if 'next_inactive_check' in stats:
+        next_check = stats['next_inactive_check']
+        days_until = stats.get('days_until_next', 0)
+        
+        embed.add_field(
+            name="🔄 Next Inactive Check",
+            value=f"{next_check.strftime('%Y-%m-%d')}\n({days_until} days from now)",
+            inline=True
+        )
+    
+    # Grace period info
+    if stats.get('in_grace_period', 0) > 0:
+        embed.add_field(
+            name="🛡️ Grace Period Note",
+            value="Members in grace period won't be checked for inactivity",
+            inline=False
+        )
+    
+    embed.set_footer(text="Grace period: 7 days after promotion/pardon")
+    
+    await ctx.send(embed=embed)
+    logger.info(f"Cleanupstats command executed by {ctx.author.name}")
+
+@bot.command(name='listgrace')
+@commands.has_permissions(administrator=True)
+async def list_grace_period_members(ctx):
+    """List all members currently in grace period"""
+    global cleanup_system, main_guild
+    
+    if not cleanup_system:
+        await ctx.send("❌ Cleanup system not initialized")
+        return
+    
+    if not hasattr(cleanup_system, 'member_grace_period'):
+        await ctx.send("❌ Grace period system not available")
+        return
+    
+    grace_members = cleanup_system.member_grace_period
+    
+    if not grace_members:
+        await ctx.send("🛡️ No members currently in grace period")
+        return
+    
+    now = datetime.now()
+    embed = discord.Embed(
+        title="🛡️ Members in Grace Period",
+        description="These members won't be checked for inactivity",
+        color=discord.Color.green(),
+        timestamp=now
+    )
+    
+    sorted_members = sorted(grace_members.items(), key=lambda x: x[1])  # Sort by grace end date
+    
+    for member_id, grace_until in sorted_members:
+        member = main_guild.get_member(member_id)
+        if member:
+            days_left = max(0, (grace_until - now).days) + 1
+            embed.add_field(
+                name=member.display_name,
+                value=f"Until: {grace_until.strftime('%Y-%m-%d')}\n({days_left} days left)",
+                inline=True
+            )
+    
+    embed.set_footer(text=f"Total: {len(grace_members)} members")
+    
+    await ctx.send(embed=embed)
+    logger.info(f"Listgrace command executed by {ctx.author.name}")
 
 # ======== EVENT HANDLERS ========
 
@@ -366,6 +584,12 @@ async def on_member_remove(member):
             if member.id in cleanup_system.member_last_check:
                 del cleanup_system.member_last_check[member.id]
                 logger.info(f"Removed {member.name} from cleanup tracking")
+        
+        # Remove from grace period if exists
+        if cleanup_system and hasattr(cleanup_system, 'member_grace_period'):
+            if member.id in cleanup_system.member_grace_period:
+                del cleanup_system.member_grace_period[member.id]
+                logger.info(f"Removed {member.name} from grace period tracking")
             
     except Exception as e:
         logger.error(f"❌ Error in on_member_remove: {e}")
