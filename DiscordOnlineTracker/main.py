@@ -52,6 +52,26 @@ class ImperialBot(commands.Bot):
         self.cleanup_system = None
         self.main_guild = None
         self.bot_start_time = datetime.now()
+        
+        # Register all commands
+        self.setup_commands()
+
+    def setup_commands(self):
+        """Setup all commands"""
+        # Create command objects from the decorated methods
+        self.add_command(commands.Command(name='test', callback=self.test_command))
+        self.add_command(commands.Command(name='status', callback=self.status_command))
+        self.add_command(commands.Command(name='cleanup', callback=self.manual_cleanup))
+        self.add_command(commands.Command(name='resetcheck', callback=self.reset_member_check))
+        self.add_command(commands.Command(name='interview', callback=self.force_interview))
+        self.add_command(commands.Command(name='checkmember', callback=self.check_member_status))
+        self.add_command(commands.Command(name='help', callback=self.help_command))
+        
+        # Add permission checks
+        self.manual_cleanup.requires = commands.has_permissions(administrator=True)
+        self.reset_member_check.requires = commands.has_permissions(administrator=True)
+        self.force_interview.requires = commands.has_permissions(administrator=True)
+        self.check_member_status.requires = commands.has_permissions(administrator=True)
 
     async def setup_hook(self):
         """Setup hook - runs before on_ready"""
@@ -114,15 +134,13 @@ class ImperialBot(commands.Bot):
         
         logger.info("✅ Bot is fully operational!")
 
-    # ======== COMMAND DEFINITIONS ========
+    # ======== COMMAND METHODS ========
     
-    @commands.command(name='test')
     async def test_command(self, ctx):
         """Test if commands work"""
         await ctx.send("✅ Test command works! Commands are functional.")
         logger.info(f"Test command executed by {ctx.author.name}")
     
-    @commands.command(name='status')
     async def status_command(self, ctx):
         """Check bot status"""
         uptime = datetime.now() - self.bot_start_time
@@ -149,8 +167,6 @@ class ImperialBot(commands.Bot):
         await ctx.send(embed=embed)
         logger.info(f"Status command executed by {ctx.author.name}")
     
-    @commands.command(name='cleanup')
-    @commands.has_permissions(administrator=True)
     async def manual_cleanup(self, ctx):
         """Manually trigger cleanup system"""
         await ctx.send("🚀 Running manual cleanup...")
@@ -174,8 +190,6 @@ class ImperialBot(commands.Bot):
         
         logger.info(f"Cleanup command executed by {ctx.author.name}")
     
-    @commands.command(name='resetcheck')
-    @commands.has_permissions(administrator=True)
     async def reset_member_check(self, ctx, member: discord.Member = None):
         """Reset a member's inactivity check date"""
         if not member:
@@ -193,8 +207,6 @@ class ImperialBot(commands.Bot):
         else:
             await ctx.send("❌ Check tracking not available")
     
-    @commands.command(name='interview')
-    @commands.has_permissions(administrator=True)
     async def force_interview(self, ctx, member: discord.Member = None):
         """Force start an interview for a member"""
         if not member:
@@ -216,8 +228,6 @@ class ImperialBot(commands.Bot):
         
         logger.info(f"Interview command executed by {ctx.author.name} for {member.name}")
     
-    @commands.command(name='checkmember')
-    @commands.has_permissions(administrator=True)
     async def check_member_status(self, ctx, member: discord.Member = None):
         """Check a member's status"""
         if not member:
@@ -269,7 +279,6 @@ class ImperialBot(commands.Bot):
         await ctx.send(embed=embed)
         logger.info(f"Checkmember command executed by {ctx.author.name} for {member.name}")
     
-    @commands.command(name='help')
     async def help_command(self, ctx):
         """Show available commands"""
         embed = discord.Embed(
