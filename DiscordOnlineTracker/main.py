@@ -120,9 +120,13 @@ class ImperialBot(commands.Bot):
 
     @tasks.loop(hours=1)
     async def cleanup_state_task(self):
-        """Clean up stale state data hourly"""
+    """Clean up stale state data hourly - NON-BLOCKING"""
+    try:
         if hasattr(self.state, 'cleanup_stale_data'):
-            self.state.cleanup_stale_data()
+            # Run in executor to avoid blocking
+            await asyncio.to_thread(self.state.cleanup_stale_data)
+    except Exception as e:
+        logger.error(f"❌ Error in cleanup_state_task: {e}")
     
     @cleanup_state_task.before_loop
     async def before_cleanup_state(self):
