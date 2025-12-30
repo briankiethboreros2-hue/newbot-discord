@@ -52,16 +52,7 @@ class ImperialBot(commands.Bot):
         self.cleanup_system = None
         self.main_guild = None
         self.bot_start_time = datetime.now()
-        
-        # Add commands directly
-        self.add_command(self.test_command)
-        self.add_command(self.status_command)
-        self.add_command(self.manual_cleanup)
-        self.add_command(self.reset_member_check)
-        self.add_command(self.force_interview)
-        self.add_command(self.check_member_status)
-        self.add_command(self.help_command)
-    
+
     async def setup_hook(self):
         """Setup hook - runs before on_ready"""
         logger.info("🔧 Running setup_hook...")
