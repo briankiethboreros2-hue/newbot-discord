@@ -3,10 +3,9 @@ services:
     name: imperial-bot
     env: python
     plan: free
+    region: frankfurt  # Try different region
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     envVars:
       - key: DISCORD_TOKEN
         sync: false
-    # Optional: auto-restart if crashes
-    restartPolicy: always
