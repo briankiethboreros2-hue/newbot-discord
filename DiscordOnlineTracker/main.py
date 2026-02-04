@@ -7,6 +7,7 @@ import traceback
 import sys
 import time
 import asyncio
+import random
 
 # Import our modules
 from recruitment import RecruitmentSystem
@@ -37,9 +38,8 @@ class ImperialBot(commands.Bot):
             command_prefix="!",
             intents=intents,
             help_command=None,
-            # ADD THESE FOR RENDER STABILITY:
             reconnect=True,
-            max_messages=None  # Disable message cache to save memory
+            max_messages=None
         )
         
         self.state = StateManager()
@@ -464,8 +464,14 @@ class ImperialBot(commands.Bot):
         await super().close()
 
 def main():
-    """Main function - SIMPLIFIED for Render"""
+    """Main function with DELAYED startup to avoid Cloudflare bans"""
     logger.info("🚀 Starting Imperial Bot on Render...")
+    
+    # ======== CRITICAL FIX: RANDOM DELAY BEFORE STARTING ========
+    # This avoids rate limits when Render restarts your bot
+    delay_seconds = random.randint(30, 300)  # Wait 30-300 seconds (0.5-5 minutes)
+    logger.info(f"⏳ Waiting {delay_seconds} seconds before connecting... (avoiding rate limits)")
+    time.sleep(delay_seconds)
     
     # Get token
     token = os.environ.get('DISCORD_TOKEN')
@@ -475,16 +481,55 @@ def main():
     
     bot = ImperialBot()
     
-    # SIMPLE run - Render will restart if it crashes
-    try:
-        logger.info("🔗 Connecting to Discord...")
-        bot.run(token)
-    except KeyboardInterrupt:
-        logger.info("🛑 Bot stopped by user")
-    except Exception as e:
-        logger.error(f"❌ Bot crashed: {e}")
-        traceback.print_exc()
-        # Render will auto-restart the worker
+    # Try to connect with exponential backoff
+    max_attempts = 5
+    attempt = 0
+    
+    while attempt < max_attempts:
+        attempt += 1
+        try:
+            logger.info(f"🔗 Attempt {attempt}/{max_attempts}: Connecting to Discord...")
+            bot.run(token)
+            # If we get here, bot.run() exited normally (shouldn't happen)
+            logger.info("✅ Bot disconnected normally")
+            break
+            
+        except discord.HTTPException as e:
+            if e.status == 429:  # Rate limited
+                retry_after = min(300, 60 * attempt)  # Max 5 minutes
+                logger.warning(f"⏸️ Rate limited! Waiting {retry_after} seconds...")
+                time.sleep(retry_after)
+            elif e.status == 403:  # Forbidden (Cloudflare ban)
+                logger.error(f"❌ Cloudflare ban detected (Error 1015). Waiting 5 minutes...")
+                time.sleep(300)  # Wait 5 minutes
+            else:
+                logger.error(f"❌ HTTP Error {e.status}: {e}")
+                if attempt < max_attempts:
+                    wait_time = 60 * attempt  # 1, 2, 3, 4, 5 minutes
+                    logger.info(f"🔄 Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    break
+                    
+        except discord.LoginFailure:
+            logger.error("❌ Invalid bot token!")
+            break
+            
+        except KeyboardInterrupt:
+            logger.info("🛑 Bot stopped by user")
+            break
+            
+        except Exception as e:
+            logger.error(f"❌ Unexpected error: {e}")
+            traceback.print_exc()
+            
+            if attempt < max_attempts:
+                wait_time = 120 * attempt  # 2, 4, 6, 8, 10 minutes
+                logger.info(f"🔄 Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                logger.error("❌ Max connection attempts reached. Render will restart this worker.")
+                break
 
 if __name__ == "__main__":
     main()
