@@ -3,11 +3,14 @@ services:
     name: imperial-bot
     env: python
     plan: free
-    region: frankfurt  # Different from default
+    region: frankfurt
     buildCommand: |
+      cd DiscordOnlineTracker
       pip install --upgrade pip
       pip install -r requirements.txt
-    startCommand: python main.py
+    startCommand: |
+      cd DiscordOnlineTracker
+      python main.py
     envVars:
       - key: DISCORD_TOKEN
         sync: false
