@@ -1,0 +1,21 @@
+services:
+  # Discord Bot (Worker - no public URL, avoids Cloudflare)
+  - type: worker
+    name: imperial-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+
+  # Optional: Health check server (separate service)
+  - type: web
+    name: bot-monitor
+    env: python
+    plan: free
+    buildCommand: pip install flask
+    startCommand: python monitor.py
+    healthCheckPath: /health
+    autoDeploy: false
