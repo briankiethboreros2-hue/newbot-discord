@@ -3,8 +3,10 @@ services:
     name: imperial-bot
     env: python
     plan: free
-    region: frankfurt  # Try different region
-    buildCommand: pip install -r requirements.txt
+    region: frankfurt  # Different from default
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
     startCommand: python main.py
     envVars:
       - key: DISCORD_TOKEN
