@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web  # MUST be "web" for free tier
     name: imperial-bot
     env: python
     plan: free
@@ -14,4 +14,5 @@ services:
     envVars:
       - key: DISCORD_TOKEN
         sync: false
-    restartPolicy: always
+    # Optional: Disable auto-sleep if you want 24/7 (uses free hours)
+    # autoSleep: false
