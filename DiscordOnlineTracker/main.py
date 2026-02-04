@@ -6,23 +6,13 @@ from datetime import datetime
 import traceback
 import sys
 import time
-import aiohttp
 import asyncio
-from quart import Quart, request
 
 # Import our modules
 from recruitment import RecruitmentSystem
 from online_announce import OnlineAnnounce
 from cleanup import CleanupSystem, InactiveMemberVoteView
 from state_manager import StateManager
-
-# Import your existing keep_alive
-try:
-    from keep_alive import start_keep_alive
-    keep_alive_available = True
-except ImportError as e:
-    keep_alive_available = False
-    print(f"⚠️ keep_alive.py not found: {e}")
 
 # Set up logging
 logging.basicConfig(
@@ -43,21 +33,13 @@ intents.guilds = True
 
 class ImperialBot(commands.Bot):
     def __init__(self):
-        # Create custom connector to bypass Cloudflare
-        connector = aiohttp.TCPConnector(
-            limit=None,
-            ttl_dns_cache=300,
-            family=4,  # Use IPv4 only (more reliable)
-            ssl=False
-        )
-        
         super().__init__(
             command_prefix="!",
             intents=intents,
             help_command=None,
-            connector=connector,
-            # Use older HTTP version
-            http_version=9
+            # ADD THESE FOR RENDER STABILITY:
+            reconnect=True,
+            max_messages=None  # Disable message cache to save memory
         )
         
         self.state = StateManager()
@@ -66,8 +48,7 @@ class ImperialBot(commands.Bot):
         self.cleanup_system = None
         self.main_guild = None
         self.bot_start_time = datetime.now()
-        self.retry_count = 0
-        self.max_retries = 10
+        self.is_running = True
         
         # Register all commands
         self.setup_commands()
@@ -93,33 +74,8 @@ class ImperialBot(commands.Bot):
         """Setup hook - runs before on_ready"""
         logger.info("🔧 Running setup_hook...")
         
-        # Enable gateway intents for better reconnection
-        self._connection.gateway.encoding = 'json'
-        self._connection.gateway.zlib = False
-        
         if hasattr(self.state, 'start_auto_save'):
             self.state.start_auto_save()
-
-    async def on_connect(self):
-        """Called when bot connects to Discord"""
-        logger.info(f"🔗 Connected to Discord Gateway")
-        self.retry_count = 0  # Reset retry count on successful connection
-
-    async def on_disconnect(self):
-        """Called when bot disconnects"""
-        logger.warning(f"🔌 Bot disconnected. Attempting to reconnect...")
-        self.retry_count += 1
-        
-        if self.retry_count <= self.max_retries:
-            wait_time = min(30 * self.retry_count, 300)  # Exponential backoff up to 5 min
-            logger.info(f"⏳ Reconnecting in {wait_time} seconds... (Attempt {self.retry_count}/{self.max_retries})")
-            await asyncio.sleep(wait_time)
-        else:
-            logger.error(f"❌ Max reconnection attempts reached. Please restart manually.")
-
-    async def on_resumed(self):
-        """Called when bot resumes connection"""
-        logger.info(f"✅ Connection resumed")
 
     async def on_ready(self):
         """Bot is ready - set up systems"""
@@ -502,84 +458,33 @@ class ImperialBot(commands.Bot):
         logger.error(f"❌ Error in event {event}:")
         traceback.print_exc()
 
-# Create Quart app for web server
-app = Quart(__name__)
-
-@app.route('/')
-async def index():
-    return {
-        "status": "online",
-        "bot": "Imperial Bot",
-        "time": datetime.now().isoformat()
-    }
-
-@app.route('/health')
-async def health():
-    return {"status": "healthy"}, 200
-
-def run_web_server():
-    """Run Quart web server"""
-    app.run(host='0.0.0.0', port=8080)
-
-async def run_bot_with_retry():
-    """Run bot with retry logic"""
-    token = os.environ.get('DISCORD_TOKEN')
-    
-    if not token:
-        # Try to get token from file
-        try:
-            with open('token.txt', 'r') as f:
-                token = f.read().strip()
-                logger.info("✅ Found token in token.txt")
-        except:
-            logger.error("❌ No token found in environment or token.txt")
-            return
-    
-    bot_instance = ImperialBot()
-    
-    while True:
-        try:
-            logger.info("🔗 Attempting to connect to Discord...")
-            await bot_instance.start(token)
-            
-        except discord.LoginFailure:
-            logger.error("❌ Invalid token. Please check your token.")
-            break
-        except KeyboardInterrupt:
-            logger.info("🛑 Bot stopped by user")
-            break
-        except Exception as e:
-            logger.error(f"❌ Bot crashed: {e}")
-            traceback.print_exc()
-            
-            # Exponential backoff
-            wait_time = min(300, 30 * (bot_instance.retry_count + 1))  # Max 5 minutes
-            logger.info(f"🔄 Restarting in {wait_time} seconds...")
-            await asyncio.sleep(wait_time)
-            
-            bot_instance.retry_count += 1
-            if bot_instance.retry_count > bot_instance.max_retries:
-                logger.error("❌ Max retries reached. Please check your configuration.")
-                break
+    async def close(self):
+        """Properly close the bot"""
+        self.is_running = False
+        await super().close()
 
 def main():
-    """Main function to run the bot"""
-    logger.info("🚀 Starting Imperial Bot with Cloudflare bypass...")
+    """Main function - SIMPLIFIED for Render"""
+    logger.info("🚀 Starting Imperial Bot on Render...")
     
-    # Start web server in background thread
-    import threading
-    web_thread = threading.Thread(target=run_web_server, daemon=True)
-    web_thread.start()
-    logger.info("🌐 Web server started on port 8080")
+    # Get token
+    token = os.environ.get('DISCORD_TOKEN')
+    if not token:
+        logger.error("❌ DISCORD_TOKEN not found in environment!")
+        return
     
-    # Run bot with asyncio
+    bot = ImperialBot()
+    
+    # SIMPLE run - Render will restart if it crashes
     try:
-        asyncio.run(run_bot_with_retry())
+        logger.info("🔗 Connecting to Discord...")
+        bot.run(token)
     except KeyboardInterrupt:
         logger.info("🛑 Bot stopped by user")
     except Exception as e:
-        logger.error(f"❌ Fatal error: {e}")
+        logger.error(f"❌ Bot crashed: {e}")
         traceback.print_exc()
+        # Render will auto-restart the worker
 
 if __name__ == "__main__":
     main()
