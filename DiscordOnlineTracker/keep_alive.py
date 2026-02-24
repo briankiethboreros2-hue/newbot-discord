@@ -1,11 +1,42 @@
 # keep_alive.py — FIXED FOR RENDER
 from flask import Flask
+from itertools import cycle
+from flask import Flask, render_template_string
 import threading
 import time
 import requests
 import os
 import requests
-from itertools import cycle
+import datetime
+
+app = Flask(__name__)
+
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Imperial Bot Status</title>
+    <meta http-equiv="refresh" content="60">
+</head>
+<body>
+    <h1>🤖 Imperial Discord Bot</h1>
+    <p>Status: <span style="color: green;">ONLINE</span></p>
+    <p>Last Updated: {{ timestamp }}</p>
+    <p>This is a legitimate Discord bot service.</p>
+</body>
+</html>
+'''
+
+@app.route('/')
+def home():
+    return render_template_string(
+        HTML_TEMPLATE, 
+        timestamp=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    )
+
+@app.route('/health')
+def health():
+    return {"status": "healthy", "timestamp": datetime.datetime.now().isoformat()}
 
 # If you get a proxy list service
 proxies = [
