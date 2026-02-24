@@ -4,6 +4,19 @@ import threading
 import time
 import requests
 import os
+import requests
+from itertools import cycle
+
+# If you get a proxy list service
+proxies = [
+    'http://proxy1:port',
+    'http://proxy2:port',
+]
+proxy_pool = cycle(proxies)
+
+def get_with_proxy(url):
+    proxy = next(proxy_pool)
+    return requests.get(url, proxies={"http": proxy, "https": proxy})
 
 app = Flask(__name__)
 
