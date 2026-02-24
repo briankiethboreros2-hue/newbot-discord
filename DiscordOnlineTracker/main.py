@@ -7,6 +7,8 @@ import traceback
 import sys
 import time
 import asyncio
+import aiohttp
+from aiohttp import ClientTimeout, ClientConnectorError, ClientOSError, ServerDisconnectedError
 import random
 
 # Import our modules
@@ -15,12 +17,21 @@ from online_announce import OnlineAnnounce
 from cleanup import CleanupSystem, InactiveMemberVoteView
 from state_manager import StateManager
 
+# Import your existing keep_alive
+try:
+    from keep_alive import start_keep_alive
+    keep_alive_available = True
+except ImportError as e:
+    keep_alive_available = False
+    print(f"⚠️ keep_alive.py not found: {e}")
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout)
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('bot_log.txt')  # Also log to file for debugging
     ]
 )
 logger = logging.getLogger(__name__)
@@ -32,14 +43,57 @@ intents.message_content = True
 intents.presences = True
 intents.guilds = True
 
+# Custom aiohttp session with Cloudflare-friendly settings
+class CloudflareFriendlySession:
+    def __init__(self):
+        self.session = None
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15'
+        ]
+        
+    async def get_session(self):
+        if self.session is None or self.session.closed:
+            timeout = ClientTimeout(total=60, connect=30, sock_read=30)
+            connector = aiohttp.TCPConnector(
+                limit=10,
+                ttl_dns_cache=300,
+                force_close=True,
+                enable_cleanup_closed=True,
+                ssl=False  # Sometimes helps with Cloudflare
+            )
+            
+            self.session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector,
+                headers={
+                    'User-Agent': random.choice(self.user_agents),
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1'
+                }
+            )
+        return self.session
+    
+    async def close(self):
+        if self.session and not self.session.closed:
+            await self.session.close()
+
+# Global session for Cloudflare-friendly requests
+cf_session = CloudflareFriendlySession()
+
 class ImperialBot(commands.Bot):
     def __init__(self):
         super().__init__(
             command_prefix="!",
             intents=intents,
-            help_command=None,
-            reconnect=True,
-            max_messages=None
+            help_command=None
         )
         
         self.state = StateManager()
@@ -48,7 +102,9 @@ class ImperialBot(commands.Bot):
         self.cleanup_system = None
         self.main_guild = None
         self.bot_start_time = datetime.now()
-        self.is_running = True
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 20
+        self.base_reconnect_delay = 5
         
         # Register all commands
         self.setup_commands()
@@ -63,6 +119,7 @@ class ImperialBot(commands.Bot):
         self.add_command(commands.Command(name='interview', callback=self.force_interview))
         self.add_command(commands.Command(name='checkmember', callback=self.check_member_status))
         self.add_command(commands.Command(name='help', callback=self.help_command))
+        self.add_command(commands.Command(name='cfstatus', callback=self.cloudflare_status))  # New command
         
         # Add permission checks
         self.manual_cleanup.requires = commands.has_permissions(administrator=True)
@@ -76,11 +133,62 @@ class ImperialBot(commands.Bot):
         
         if hasattr(self.state, 'start_auto_save'):
             self.state.start_auto_save()
+        
+        # Start Cloudflare monitoring
+        self.loop.create_task(self.monitor_cloudflare_status())
+
+    async def monitor_cloudflare_status(self):
+        """Monitor for Cloudflare issues and adjust behavior"""
+        await self.wait_until_ready()
+        logger.info("🔍 Starting Cloudflare status monitor...")
+        
+        while not self.is_closed():
+            try:
+                # Check Discord API latency as a proxy for connection health
+                latency = self.latency
+                if latency > 5:  # High latency might indicate routing issues
+                    logger.warning(f"⚠️ High latency detected: {latency:.2f}s - possible Cloudflare issues")
+                
+                # Test connection with aiohttp if needed
+                if hasattr(self, 'test_cloudflare_connection'):
+                    await self.test_cloudflare_connection()
+                
+                await asyncio.sleep(300)  # Check every 5 minutes
+                
+            except Exception as e:
+                logger.error(f"❌ Error in Cloudflare monitor: {e}")
+                await asyncio.sleep(60)
+
+    async def test_cloudflare_connection(self):
+        """Test if Cloudflare is blocking us"""
+        try:
+            session = await cf_session.get_session()
+            
+            # Test connection to Discord API (which might be behind Cloudflare)
+            async with session.get('https://discord.com/api/v10/gateway', timeout=10) as resp:
+                if resp.status == 403:
+                    logger.error("🚫 Cloudflare 403 detected! Possible IP ban.")
+                    # Implement exponential backoff
+                    self.reconnect_attempts += 1
+                    delay = min(self.base_reconnect_delay * (2 ** self.reconnect_attempts), 3600)
+                    logger.info(f"⏳ Applying backoff: waiting {delay}s before next attempt")
+                    await asyncio.sleep(delay)
+                elif resp.status == 200:
+                    logger.debug("✅ Cloudflare connection test passed")
+                    self.reconnect_attempts = 0  # Reset on success
+                    
+        except (ClientConnectorError, ServerDisconnectedError) as e:
+            logger.warning(f"⚠️ Connection test failed: {e}")
+        except Exception as e:
+            logger.error(f"❌ Unexpected error in connection test: {e}")
 
     async def on_ready(self):
         """Bot is ready - set up systems"""
         logger.info(f'✅ Bot is online as {self.user} (ID: {self.user.id})')
         logger.info(f'📊 Connected to {len(self.guilds)} guild(s)')
+        
+        # Reset reconnect attempts on successful connection
+        self.reconnect_attempts = 0
         
         # Log all guilds
         for guild in self.guilds:
@@ -104,14 +212,17 @@ class ImperialBot(commands.Bot):
                 # Make cleanup system accessible to views
                 InactiveMemberVoteView.cleanup_system = self.cleanup_system
                 
-                # Start tasks
+                # Start tasks with jitter to avoid rate limits
                 if hasattr(self.cleanup_system, 'start_cleanup_task'):
+                    # Add random delay to task start
+                    await asyncio.sleep(random.uniform(1, 5))
                     self.cleanup_system.start_cleanup_task()
-                    logger.info("✅ Cleanup task started")
+                    logger.info("✅ Cleanup task started with jitter")
                 
                 if hasattr(self.online_announce, 'start_tracking'):
+                    await asyncio.sleep(random.uniform(1, 5))
                     self.online_announce.start_tracking()
-                    logger.info("✅ Online announcement tracking started")
+                    logger.info("✅ Online announcement tracking started with jitter")
                 
                 await self.verify_resources()
                 logger.info("✅ All systems initialized")
@@ -124,7 +235,7 @@ class ImperialBot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="Impèrius Recruits"
+                name="Impèrius Recruits | !help"
             ),
             status=discord.Status.online
         )
@@ -152,6 +263,8 @@ class ImperialBot(commands.Bot):
         embed.add_field(name="🏃 Uptime", value=f"{days}d {hours}h {minutes}m", inline=True)
         embed.add_field(name="🏰 Guild", value=self.main_guild.name if self.main_guild else "None", inline=True)
         embed.add_field(name="👤 Members", value=self.main_guild.member_count if self.main_guild else "0", inline=True)
+        embed.add_field(name="🔄 Reconnect Attempts", value=str(self.reconnect_attempts), inline=True)
+        embed.add_field(name="📶 Latency", value=f"{self.latency*1000:.1f}ms", inline=True)
         
         # System status
         systems = []
@@ -163,6 +276,34 @@ class ImperialBot(commands.Bot):
         
         await ctx.send(embed=embed)
         logger.info(f"Status command executed by {ctx.author.name}")
+    
+    async def cloudflare_status(self, ctx):
+        """Check Cloudflare/connection status"""
+        embed = discord.Embed(
+            title="🌐 Cloudflare Connection Status",
+            color=discord.Color.orange()
+        )
+        
+        embed.add_field(name="📶 Current Latency", value=f"{self.latency*1000:.1f}ms", inline=True)
+        embed.add_field(name="🔄 Reconnect Attempts", value=str(self.reconnect_attempts), inline=True)
+        embed.add_field(name="🔌 Gateway Connected", value="✅ Yes" if self.is_ws_ratelimited() else "✅ Yes", inline=True)
+        
+        # Check gateway version
+        embed.add_field(name="🎮 Gateway Version", value="v10", inline=True)
+        
+        # Connection quality
+        if self.latency < 1:
+            quality = "🟢 Excellent"
+        elif self.latency < 3:
+            quality = "🟡 Good"
+        elif self.latency < 5:
+            quality = "🟠 Fair"
+        else:
+            quality = "🔴 Poor"
+        
+        embed.add_field(name="📊 Connection Quality", value=quality, inline=True)
+        
+        await ctx.send(embed=embed)
     
     async def manual_cleanup(self, ctx):
         """Manually trigger cleanup system"""
@@ -296,7 +437,8 @@ class ImperialBot(commands.Bot):
         public_cmds = [
             ("`!status`", "Check bot status"),
             ("`!help`", "Show this help message"),
-            ("`!test`", "Test if commands work")
+            ("`!test`", "Test if commands work"),
+            ("`!cfstatus`", "Check Cloudflare/connection status")
         ]
         
         embed.add_field(
@@ -459,76 +601,69 @@ class ImperialBot(commands.Bot):
         traceback.print_exc()
 
     async def close(self):
-        """Properly close the bot"""
-        self.is_running = False
+        """Clean up on close"""
+        logger.info("🔒 Cleaning up connections...")
+        await cf_session.close()
         await super().close()
 
 def main():
-    """Main function with DELAYED startup to avoid Cloudflare bans"""
-    logger.info("🚀 Starting Imperial Bot on Render...")
+    """Main function to run the bot"""
+    logger.info("🚀 Starting Imperial Bot...")
     
-    # ======== CRITICAL FIX: RANDOM DELAY BEFORE STARTING ========
-    # This avoids rate limits when Render restarts your bot
-    delay_seconds = random.randint(30, 300)  # Wait 30-300 seconds (0.5-5 minutes)
-    logger.info(f"⏳ Waiting {delay_seconds} seconds before connecting... (avoiding rate limits)")
-    time.sleep(delay_seconds)
-    
-    # Get token
-    token = os.environ.get('DISCORD_TOKEN')
-    if not token:
-        logger.error("❌ DISCORD_TOKEN not found in environment!")
-        return
+    if keep_alive_available:
+        logger.info("🌐 Starting keep_alive server...")
+        import threading
+        keep_alive_thread = threading.Thread(target=start_keep_alive, daemon=True)
+        keep_alive_thread.start()
+        logger.info("✅ keep_alive server started in background")
     
     bot = ImperialBot()
+    token = os.environ.get('DISCORD_TOKEN')
     
-    # Try to connect with exponential backoff
-    max_attempts = 5
-    attempt = 0
-    
-    while attempt < max_attempts:
-        attempt += 1
+    if not token:
+        logger.error("❌ DISCORD_TOKEN not found!")
         try:
-            logger.info(f"🔗 Attempt {attempt}/{max_attempts}: Connecting to Discord...")
-            bot.run(token)
-            # If we get here, bot.run() exited normally (shouldn't happen)
-            logger.info("✅ Bot disconnected normally")
-            break
-            
-        except discord.HTTPException as e:
-            if e.status == 429:  # Rate limited
-                retry_after = min(300, 60 * attempt)  # Max 5 minutes
-                logger.warning(f"⏸️ Rate limited! Waiting {retry_after} seconds...")
-                time.sleep(retry_after)
-            elif e.status == 403:  # Forbidden (Cloudflare ban)
-                logger.error(f"❌ Cloudflare ban detected (Error 1015). Waiting 5 minutes...")
-                time.sleep(300)  # Wait 5 minutes
-            else:
-                logger.error(f"❌ HTTP Error {e.status}: {e}")
-                if attempt < max_attempts:
-                    wait_time = 60 * attempt  # 1, 2, 3, 4, 5 minutes
-                    logger.info(f"🔄 Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                else:
-                    break
-                    
+            with open('token.txt', 'r') as f:
+                token = f.read().strip()
+                logger.info("✅ Found token in token.txt")
+        except:
+            logger.error("❌ Also no token.txt file found")
+            return
+    
+    max_retries = 20  # Increased from 5
+    retry_count = 0
+    base_delay = 5
+    
+    while retry_count < max_retries:
+        try:
+            logger.info(f"🔗 Connecting to Discord... (Attempt {retry_count + 1}/{max_retries})")
+            bot.run(token, reconnect=True, log_handler=None)  # Disable default logging to reduce noise
         except discord.LoginFailure:
-            logger.error("❌ Invalid bot token!")
+            logger.error("❌ Invalid token.")
             break
-            
+        except (discord.ConnectionClosed, discord.GatewayNotFound, discord.HTTPException) as e:
+            logger.error(f"❌ Connection error: {e}")
+            retry_count += 1
+            if retry_count < max_retries:
+                # Exponential backoff with jitter
+                delay = base_delay * (2 ** min(retry_count, 5)) + random.uniform(0, 5)
+                logger.info(f"🔄 Reconnecting in {delay:.1f} seconds...")
+                time.sleep(delay)
+            else:
+                logger.error(f"❌ Max retries ({max_retries}) reached.")
         except KeyboardInterrupt:
             logger.info("🛑 Bot stopped by user")
             break
-            
         except Exception as e:
-            logger.error(f"❌ Unexpected error: {e}")
+            logger.error(f"❌ Bot crashed: {e}")
             traceback.print_exc()
-            
-            if attempt < max_attempts:
-                wait_time = 120 * attempt  # 2, 4, 6, 8, 10 minutes
-                logger.info(f"🔄 Retrying in {wait_time} seconds...")
-                time.sleep(wait_time)
+            retry_count += 1
+            if retry_count < max_retries:
+                delay = base_delay * (2 ** min(retry_count, 5)) + random.uniform(0, 5)
+                logger.info(f"🔄 Restarting in {delay:.1f} seconds...")
+                time.sleep(delay)
             else:
-                logger.error("❌ Max connection attempts reached. Render will restart this worker.")
+                logger.error(f"❌ Max retries ({max_retries}) reached.")
                 break
 
 if __name__ == "__main__":
