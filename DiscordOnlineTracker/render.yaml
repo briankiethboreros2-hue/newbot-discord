@@ -1,18 +1,12 @@
 services:
-  - type: web  # MUST be "web" for free tier
-    name: imperial-bot
-    env: python
-    plan: free
-    region: frankfurt
-    buildCommand: |
-      cd DiscordOnlineTracker
-      pip install --upgrade pip
-      pip install -r requirements.txt
-    startCommand: |
-      cd DiscordOnlineTracker
-      python main.py
+  - type: worker
+    name: discord-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
     envVars:
       - key: DISCORD_TOKEN
         sync: false
-    # Optional: Disable auto-sleep if you want 24/7 (uses free hours)
-    # autoSleep: false
+    autoDeploy: false
+    healthCheckPath: /
+    numInstances: 1
